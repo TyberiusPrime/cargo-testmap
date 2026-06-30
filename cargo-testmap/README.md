@@ -21,7 +21,9 @@ collection.
    covered by too many tests (configurable threshold) are omitted.
 2. **`cargo testmap report`** — reads only the database (it never touches your
    source files again) and emits a self-contained HTML report with
-   syntax-highlighted source and a hover/click test panel.
+   syntax-highlighted source and a hover/click test panel. The report has a
+   dark/light theme toggle behind a hamburger menu (top-right); the choice is
+   remembered across pages.
 
 ## Requirements
 

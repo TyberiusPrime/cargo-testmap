@@ -13,6 +13,7 @@ pub struct TestView<'a> {
     pub binary: &'a str,
     pub kind: &'a str,
     pub status: &'a str,
+    pub duration_ms: u64,
 }
 
 /// Per-file highlighted source (path + one HTML fragment per line).
@@ -84,6 +85,33 @@ fn up_prefix(path: &str) -> String {
     "../".repeat(path.matches('/').count())
 }
 
+/// Emit the highlighted source block. `tr_attrs(lineno)` returns the extra
+/// `<tr>` attributes (e.g. `data-line`).
+fn source_block<F: Fn(&str) -> String>(
+    highlighted: &[String],
+    cov: &BTreeMap<String, Vec<u32>>,
+    tr_attrs: &F,
+) -> String {
+    let mut s = String::new();
+    s.push_str("<pre class=\"source\"><code><table>");
+    for (i, frag) in highlighted.iter().enumerate() {
+        let lineno = (i + 1).to_string();
+        let is_cov = cov.contains_key(&lineno);
+        s.push_str("<tr");
+        if is_cov {
+            s.push_str(" class=\"cov\"");
+        }
+        s.push_str(&tr_attrs(&lineno));
+        s.push('>');
+        s.push_str(&format!("<td class=\"ln\">{lineno}</td>"));
+        s.push_str("<td class=\"lc\">");
+        s.push_str(frag);
+        s.push_str("</td></tr>");
+    }
+    s.push_str("</table></code></pre>");
+    s
+}
+
 /// Render a multi-file directory report (the default).
 pub fn render_directory(
     out_dir: &std::path::Path,
@@ -104,7 +132,8 @@ pub fn render_directory(
     // --- index.html ---
     {
         let mut html = String::new();
-        html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+        html.push_str("<!doctype html><html lang=\"en\"><head>");
+        html.push_str("<meta charset=\"utf-8\">");
         html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
         html.push_str("<title>testmap report</title>");
         html.push_str("<link rel=\"stylesheet\" href=\"css/style.css\"></head><body>");
@@ -138,9 +167,11 @@ pub fn render_directory(
 
         let prefix = up_prefix(&view.path);
         let cov = coverage[&view.path].clone();
+        let dir_attrs = |ln: &str| format!(" data-line=\"{ln}\"");
 
         let mut html = String::new();
-        html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+        html.push_str("<!doctype html><html lang=\"en\"><head>");
+        html.push_str("<meta charset=\"utf-8\">");
         html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
         html.push_str(&format!("<title>{} — testmap</title>", escape(&view.path)));
         html.push_str(&format!(
@@ -152,21 +183,7 @@ pub fn render_directory(
         html.push_str(&format!("<span class=\"path\">{}</span>", escape(&view.path)));
         html.push_str("</div>");
 
-        html.push_str("<pre class=\"source\"><code><table>");
-        for (i, frag) in view.highlighted.iter().enumerate() {
-            let lineno = (i + 1).to_string();
-            let is_cov = cov.lines.contains_key(&lineno);
-            html.push_str("<tr");
-            if is_cov {
-                html.push_str(" class=\"cov\"");
-            }
-            html.push_str(&format!(" id=\"L{lineno}\" data-line=\"{lineno}\">"));
-            html.push_str(&format!("<td class=\"ln\">{lineno}</td>"));
-            html.push_str("<td class=\"lc\">");
-            html.push_str(frag);
-            html.push_str("</td></tr>");
-        }
-        html.push_str("</table></code></pre>");
+        html.push_str(&source_block(&view.highlighted, &cov.lines, &dir_attrs));
 
         html.push_str("<div id=\"panel\" class=\"panel\" role=\"status\">");
         html.push_str("<span class=\"hint\">Hover a highlighted line to see covering tests · click to pin</span>");
@@ -182,9 +199,7 @@ pub fn render_directory(
         html.push(':');
         html.push_str(&lines_obj(&cov.lines));
         html.push_str("};</script>");
-        html.push_str(&format!(
-            "<script src=\"{prefix}js/app.js\"></script>"
-        ));
+        html.push_str(&format!("<script src=\"{prefix}js/app.js\"></script>"));
         html.push_str("</body></html>");
 
         fs::write(&dest, html)?;
@@ -206,7 +221,8 @@ pub fn render_single_file(
     let (tests_js, cov_js) = build_data(tests, coverage);
 
     let mut html = String::new();
-    html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+    html.push_str("<!doctype html><html lang=\"en\"><head>");
+    html.push_str("<meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     html.push_str("<title>testmap report</title><style>");
     html.push_str(CSS);
@@ -232,30 +248,16 @@ pub fn render_single_file(
 
     for view in views {
         let cov = &coverage[&view.path];
+        let esc_file = escape(&view.path);
+        let sf_attrs = move |ln: &str| format!(" data-file=\"{esc_file}\" data-line=\"{ln}\"");
         html.push_str(&format!(
             "<section class=\"file\" id=\"file-{id}\"><div class=\"toolbar\">\
              <span class=\"path\">{name}</span></div>",
             id = fnv1a(&view.path),
             name = escape(&view.path)
         ));
-        html.push_str("<pre class=\"source\"><code><table>");
-        for (i, frag) in view.highlighted.iter().enumerate() {
-            let lineno = (i + 1).to_string();
-            let is_cov = cov.lines.contains_key(&lineno);
-            html.push_str("<tr");
-            if is_cov {
-                html.push_str(" class=\"cov\"");
-            }
-            html.push_str(&format!(
-                " data-file=\"{}\" data-line=\"{lineno}\">",
-                escape(&view.path)
-            ));
-            html.push_str(&format!("<td class=\"ln\">{lineno}</td>"));
-            html.push_str("<td class=\"lc\">");
-            html.push_str(frag);
-            html.push_str("</td></tr>");
-        }
-        html.push_str("</table></code></pre></section>");
+        html.push_str(&source_block(&view.highlighted, &cov.lines, &sf_attrs));
+        html.push_str("</section>");
     }
 
     html.push_str("<div id=\"panel\" class=\"panel\" role=\"status\">");

@@ -11,8 +11,8 @@ pub fn run(args: ReportArgs) -> Result<()> {
     let db = database::Database::read(&input)?;
 
     let highlighter = highlight::Highlighter::get();
-    let theme_name = args.theme.as_deref();
-    let theme = highlighter.theme(theme_name);
+    let theme_name = args.theme.as_deref().unwrap_or("base16-ocean.dark");
+    let theme = highlighter.theme(Some(theme_name));
 
     // Build test views in the same order/index as the database's tests array.
     let tests: Vec<html::TestView<'_>> = db
@@ -24,6 +24,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             binary: &t.binary,
             kind: &t.kind,
             status: &t.status,
+            duration_ms: t.duration_ms,
         })
         .collect();
 
@@ -42,13 +43,12 @@ pub fn run(args: ReportArgs) -> Result<()> {
     match args.single_file {
         Some(path) => {
             let out = PathBuf::from(&path);
-            html::render_single_file(&out, theme_name.unwrap_or("base16-ocean.dark"), &tests, &db.sources, &views)?;
+            html::render_single_file(&out, theme_name, &tests, &db.sources, &views)?;
             eprintln!("✓ wrote single-file report → {}", out.display());
         }
         None => {
             let out_dir = PathBuf::from(&args.output_dir);
-            let theme_str = theme_name.unwrap_or("base16-ocean.dark");
-            html::render_directory(&out_dir, theme_str, &tests, &db.sources, &views)?;
+            html::render_directory(&out_dir, theme_name, &tests, &db.sources, &views)?;
             eprintln!(
                 "✓ wrote report → {} (open {}/index.html)",
                 out_dir.display(),
