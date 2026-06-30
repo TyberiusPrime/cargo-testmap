@@ -1,0 +1,127 @@
+:root {
+  --bg: #1b2229;
+  --bg-elev: #232b34;
+  --bg-row: #20272f;
+  --bg-cov: #15201a;
+  --bg-hover: #2c3a47;
+  --bg-pin: #3a4b3a;
+  --fg: #c0c5ce;
+  --fg-dim: #7d8a99;
+  --accent: #8fa1b3;
+  --border: #2a3140;
+  --fail: #bf616a;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+main.index { padding: 2rem; }
+main.index h1 { margin: 0 0 .25rem; font-size: 1.6rem; }
+.meta { color: var(--fg-dim); margin: 0 0 1.5rem; }
+ul.filelist { list-style: none; padding: 0; margin: 0; max-width: 60rem; }
+ul.filelist li {
+  padding: .35rem .5rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+}
+ul.filelist li:hover { background: var(--bg-row); }
+.count { color: var(--fg-dim); font-size: .85rem; }
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .5rem 1rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar .back { font-weight: 600; }
+.toolbar .path { color: var(--fg-dim); }
+
+pre.source {
+  margin: 0;
+  padding: 1rem 0;
+  overflow-x: auto;
+  tab-size: 4;
+}
+pre.source code { display: block; }
+pre.source table { border-collapse: collapse; width: 100%; }
+pre.source tr { transition: background-color .08s; }
+pre.source td { vertical-align: top; padding: 0; border: 0; }
+pre.source td.ln {
+  user-select: none;
+  text-align: right;
+  padding: 0 1rem 0 1rem;
+  color: var(--fg-dim);
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  min-width: 4ch;
+  width: 1%;
+  white-space: nowrap;
+}
+pre.source td.lc {
+  padding-left: 1rem;
+  white-space: pre;
+  width: 100%;
+}
+/* A subtle marker that this line has mapped tests. */
+pre.source tr.cov td.ln::before {
+  content: "•";
+  color: #99c794;
+  margin-right: .4ch;
+}
+
+/* Hover & pinned states. */
+pre.source tr.hover { background: var(--bg-hover); }
+pre.source tr.hover td.ln { color: #fff; }
+pre.source tr.pinned { background: var(--bg-pin); }
+pre.source tr.pinned td.ln { color: #d8e6a8; }
+
+/* Bottom test panel. */
+.panel {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+  padding: .75rem 1rem;
+  min-height: 4rem;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.panel .hint { color: var(--fg-dim); }
+.panel .panel-head {
+  color: var(--fg-dim);
+  margin-bottom: .35rem;
+  font-size: .85rem;
+}
+.panel ul { list-style: none; margin: 0; padding: 0; }
+.panel li {
+  padding: .15rem 0;
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
+}
+.panel .badge {
+  font-size: .75rem;
+  color: var(--fg-dim);
+  background: var(--bg-row);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 .35rem;
+  white-space: nowrap;
+}
+.panel li.failed .badge { color: var(--fail); border-color: var(--fail); }
+.panel .tname { color: var(--fg); }
