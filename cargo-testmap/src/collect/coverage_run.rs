@@ -1,7 +1,7 @@
 use crate::collect::lcov::parse_covered;
 use crate::collect::llvm::LlvmTools;
 use crate::util::{fnv1a, relativize};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -65,7 +65,20 @@ pub fn run_single(
     let duration_ms = start.elapsed().as_millis() as u64;
 
     // Export LCOV even if the test failed — partial coverage is still useful.
-    let lcov = export_lcov(tools, &profraw, &profdata, target_exe).unwrap_or_default();
+    // If the profraw is missing, the binary wasn't instrumented for this run;
+    // surface that instead of silently recording empty coverage.
+    let lcov = match export_lcov(tools, &profraw, &profdata, target_exe) {
+        Ok(s) => s,
+        Err(e) => {
+            // Clean up so resume doesn't cache a bogus empty result.
+            let _ = std::fs::remove_file(&lcov_path);
+            let _ = std::fs::remove_file(&meta_path);
+            return Err(e.context(format!(
+                "no coverage from `{}` (binary not instrumented?)",
+                full_test_path
+            )));
+        }
+    };
     let records = relativize_records(parse_covered(&lcov), workspace_root);
 
     // Stage results for resume.
@@ -84,6 +97,44 @@ pub fn run_single(
         duration_ms,
         records,
     })
+}
+
+/// Smoke-test that the built binaries are actually coverage-instrumented.
+///
+/// Runs one test from `target_exe` with a throwaway `LLVM_PROFILE_FILE` and
+/// confirms a non-empty `.profraw` is produced. If it isn't, the binaries were
+/// built without instrumentation (almost always a stale/polluted target dir
+/// that cargo reused) and the whole collection would silently yield nothing.
+///
+/// `test_path` should be a real test name within `target_exe`.
+pub fn check_instrumented(target_exe: &Path, test_path: &str) -> Result<()> {
+    let sink = std::env::temp_dir().join(format!(
+        "testmap-smoke-{}-{}.profraw",
+        std::process::id(),
+        fnv1a(test_path),
+    ));
+    let _ = std::fs::remove_file(&sink);
+    let ran = Command::new(target_exe)
+        .arg("--exact")
+        .arg(test_path)
+        .env("LLVM_PROFILE_FILE", &sink)
+        .output();
+    // The test may pass or fail; we only care whether it wrote a profraw.
+    let ok = match &ran {
+        Ok(_) => sink.exists() && std::fs::metadata(&sink).map(|m| m.len() > 0).unwrap_or(false),
+        Err(_) => false,
+    };
+    let _ = std::fs::remove_file(&sink);
+    if !ok {
+        bail!(
+            "test binaries are not coverage-instrumented: running `{}` did not \
+             produce a `.profraw`.\n  this happens when cargo reuses a stale, \
+             non-instrumented build in the coverage target dir.\n  fix: re-run \
+             `cargo testmap collect --clean` (it wipes the coverage build dir).",
+            target_exe.display()
+        );
+    }
+    Ok(())
 }
 
 fn export_lcov(

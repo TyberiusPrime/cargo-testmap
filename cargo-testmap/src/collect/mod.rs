@@ -124,6 +124,15 @@ pub fn run(args: CollectArgs) -> Result<()> {
     if selected.is_empty() {
         anyhow::bail!("no tests matched the current filters");
     }
+
+    // --- Step 3b: verify the binaries are actually instrumented -------------
+    // Fail fast with a clear message rather than silently emitting an empty DB.
+    {
+        let (probe_case, probe_target) = &selected[0];
+        coverage_run::check_instrumented(&probe_target.executable, &probe_case.full)
+            .context("instrumentation check failed")?;
+    }
+
     eprintln!("→ {} test(s) to collect", selected.len());
 
     // --- Step 4: run each test in parallel, accumulating coverage ---------
