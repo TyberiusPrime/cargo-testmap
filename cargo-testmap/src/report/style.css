@@ -125,3 +125,39 @@ pre.source tr.pinned td.ln { color: #d8e6a8; }
 }
 .panel li.failed .badge { color: var(--fail); border-color: var(--fail); }
 .panel .tname { color: var(--fg); }
+
+/* ----------------------------------------------------------------------- */
+/* Tests catalog page (tests.html)                                        */
+/* ----------------------------------------------------------------------- */
+main.tests-page { padding: 1rem 2rem 5rem; }
+.tests-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92rem;
+}
+.tests-table th,
+.tests-table td {
+  text-align: left;
+  padding: .28rem .6rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.tests-table th {
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev);
+  z-index: 1;
+}
+.tests-table th:hover { color: var(--fg); }
+.tests-table th.sort-asc::after { content: " ▲"; color: var(--accent); }
+.tests-table th.sort-desc::after { content: " ▼"; color: var(--accent); }
+.tests-table td.tname { white-space: normal; }
+.tests-table td.num { text-align: right; }
+.tests-table tr.zero td.num { color: var(--fail); font-weight: 600; }
+.tests-table tr.zero td.tname { color: var(--fg-dim); }
+.tests-table tr.failed td.status { color: var(--fail); }
+.meta .zerocount { color: var(--fail); font-weight: 600; }
+.meta .muted { color: var(--fg-dim); }

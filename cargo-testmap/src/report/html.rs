@@ -85,6 +85,22 @@ fn up_prefix(path: &str) -> String {
     "../".repeat(path.matches('/').count())
 }
 
+/// For each test index, how many mapped lines it covers. Inverts the
+/// (post-threshold) coverage map.
+fn per_test_counts(n_tests: usize, coverage: &BTreeMap<String, SourceFile>) -> Vec<u32> {
+    let mut counts = vec![0u32; n_tests];
+    for src in coverage.values() {
+        for idxs in src.lines.values() {
+            for &i in idxs {
+                if (i as usize) < n_tests {
+                    counts[i as usize] += 1;
+                }
+            }
+        }
+    }
+    counts
+}
+
 /// Emit the highlighted source block. `tr_attrs(lineno)` returns the extra
 /// `<tr>` attributes (e.g. `data-line`).
 fn source_block<F: Fn(&str) -> String>(
@@ -116,6 +132,7 @@ fn source_block<F: Fn(&str) -> String>(
 pub fn render_directory(
     out_dir: &std::path::Path,
     theme_name: &str,
+    theme_css: &str,
     tests: &[TestView<'_>],
     coverage: &BTreeMap<String, SourceFile>,
     views: &[FileView],
@@ -136,10 +153,12 @@ pub fn render_directory(
         html.push_str("<meta charset=\"utf-8\">");
         html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
         html.push_str("<title>testmap report</title>");
-        html.push_str("<link rel=\"stylesheet\" href=\"css/style.css\"></head><body>");
+        html.push_str("<link rel=\"stylesheet\" href=\"css/style.css\">");
+        html.push_str(&format!("<style>{theme_css}</style>"));
+        html.push_str("</head><body>");
         html.push_str("<main class=\"index\"><h1>testmap</h1>");
         html.push_str(&format!(
-            "<p class=\"meta\">{} test(s) · {} file(s) · theme: {}</p>",
+            "<p class=\"meta\">{} test(s) · {} file(s) · theme: {} · <a href=\"tests.html\">view all tests →</a></p>",
             tests.len(),
             coverage.len(),
             escape(theme_name)
@@ -175,8 +194,10 @@ pub fn render_directory(
         html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
         html.push_str(&format!("<title>{} — testmap</title>", escape(&view.path)));
         html.push_str(&format!(
-            "<link rel=\"stylesheet\" href=\"{prefix}css/style.css\"></head><body>"
+            "<link rel=\"stylesheet\" href=\"{prefix}css/style.css\">"
         ));
+        html.push_str(&format!("<style>{theme_css}</style>"));
+        html.push_str("</head><body>");
 
         html.push_str("<div class=\"toolbar\">");
         html.push_str(&format!("<a class=\"back\" href=\"{prefix}index.html\">← index</a>"));
@@ -205,13 +226,140 @@ pub fn render_directory(
         fs::write(&dest, html)?;
     }
 
+    // --- tests.html (catalog of every observed test) ---
+    render_tests_page(out_dir, theme_css, tests, coverage)?;
+
     Ok(())
 }
 
-/// Render a single self-contained HTML file containing every file.
+/// Client-side column sort for the tests catalog.
+const TESTS_SORT_JS: &str = "\
+(function(){var t=document.querySelector('table.tests-table');if(!t)return;\
+var tb=t.tBodies[0];if(!tb)return;var hs=t.querySelectorAll('th[data-sort]');\
+var key=null,dir=1;hs.forEach(function(th){th.addEventListener('click',function(){\
+var k=th.dataset.sort,num=th.dataset.numeric==='1';dir=(key===k)?-dir:1;key=k;\
+hs.forEach(function(h){h.classList.remove('sort-asc','sort-desc');});\
+th.classList.add(dir>0?'sort-asc':'sort-desc');var c=th.cellIndex;\
+var rows=Array.prototype.slice.call(tb.rows);rows.sort(function(a,b){\
+var av=a.cells[c].dataset.v;if(av===undefined)av=a.cells[c].textContent.trim();\
+var bv=b.cells[c].dataset.v;if(bv===undefined)bv=b.cells[c].textContent.trim();\
+if(num){av=+av;bv=+bv;}return av<bv?-dir:av>bv?dir:0;});\
+rows.forEach(function(r){tb.appendChild(r);});});});})();";
+
+/// Render `tests.html` — a catalog of every test testmap observed, with the
+/// number of mapped lines each one covers. Tests that ran but covered no
+/// snapshotted code (0 lines) are highlighted so they jump out when trying to
+/// understand coverage gaps.
+pub fn render_tests_page(
+    out_dir: &std::path::Path,
+    theme_css: &str,
+    tests: &[TestView<'_>],
+    coverage: &BTreeMap<String, SourceFile>,
+) -> std::io::Result<()> {
+    use std::fs;
+
+    let counts = per_test_counts(tests.len(), coverage);
+    let zero = counts.iter().filter(|&&c| c == 0).count();
+    let nonzero = tests.len().saturating_sub(zero);
+
+    let mut html = String::new();
+    html.push_str("<!doctype html><html lang=\"en\"><head>");
+    html.push_str("<meta charset=\"utf-8\">");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+    html.push_str("<title>Observed tests — testmap</title>");
+    html.push_str("<link rel=\"stylesheet\" href=\"css/style.css\">");
+    html.push_str(&format!("<style>{theme_css}</style>"));
+    html.push_str("</head><body>");
+
+    html.push_str("<div class=\"toolbar\">");
+    html.push_str("<a class=\"back\" href=\"index.html\">← index</a>");
+    html.push_str(&format!(
+        "<span class=\"path\">Observed tests ({})</span>",
+        tests.len()
+    ));
+    html.push_str("</div>");
+
+    html.push_str("<main class=\"tests-page\">");
+    html.push_str(&format!(
+        "<p class=\"meta\">{} test(s) observed · {} cover ≥1 mapped line · \
+         <span class=\"zerocount\">{} cover 0 mapped lines</span> \
+         <span class=\"muted\">(ran but exercised no snapshotted code — \
+         often filtered, skipped, or broken)</span></p>",
+        tests.len(),
+        nonzero,
+        zero
+    ));
+
+    html.push_str("<table class=\"tests-table\"><thead><tr>");
+    html.push_str("<th data-sort=\"idx\">#</th>");
+    html.push_str("<th data-sort=\"status\">status</th>");
+    html.push_str("<th data-sort=\"kind\">kind</th>");
+    html.push_str("<th data-sort=\"binary\">binary</th>");
+    html.push_str("<th data-sort=\"path\">test</th>");
+    html.push_str("<th data-sort=\"lines\" data-numeric=\"1\">lines</th>");
+    html.push_str("<th data-sort=\"dur\" data-numeric=\"1\">dur&nbsp;ms</th>");
+    html.push_str("</tr></thead><tbody>");
+
+    for (i, t) in tests.iter().enumerate() {
+        let path = if t.module.is_empty() {
+            t.name.to_string()
+        } else {
+            format!("{}::{}", t.module, t.name)
+        };
+        let failed = t.status == "failed";
+        let cls = if failed {
+            "failed"
+        } else if counts[i] == 0 {
+            "zero"
+        } else {
+            ""
+        };
+        let status_v = if failed { "1" } else { "0" };
+        html.push_str(&format!("<tr class=\"{cls}\">"));
+        html.push_str(&format!("<td data-v=\"{i}\">{i}</td>"));
+        html.push_str(&format!(
+            "<td data-v=\"{status_v}\">{}</td>",
+            t.status
+        ));
+        html.push_str(&format!(
+            "<td data-v=\"{}\"><span class=\"badge\">{}</span></td>",
+            escape(t.kind),
+            escape(t.kind)
+        ));
+        html.push_str(&format!(
+            "<td data-v=\"{}\"><span class=\"badge\">{}</span></td>",
+            escape(t.binary),
+            escape(t.binary)
+        ));
+        html.push_str(&format!(
+            "<td class=\"tname\" data-v=\"{}\">{}</td>",
+            escape(&path),
+            escape(&path)
+        ));
+        html.push_str(&format!(
+            "<td class=\"num\" data-v=\"{}\">{}</td>",
+            counts[i],
+            counts[i]
+        ));
+        html.push_str(&format!(
+            "<td class=\"num\" data-v=\"{}\">{}</td>",
+            t.duration_ms,
+            t.duration_ms
+        ));
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table>");
+    html.push_str("</main>");
+    html.push_str(&format!("<script>{TESTS_SORT_JS}</script>"));
+    html.push_str("</body></html>");
+
+    fs::write(out_dir.join("tests.html"), html)?;
+    Ok(())
+}
 pub fn render_single_file(
     out_path: &std::path::Path,
     theme_name: &str,
+    theme_css: &str,
     tests: &[TestView<'_>],
     coverage: &BTreeMap<String, SourceFile>,
     views: &[FileView],
@@ -226,6 +374,7 @@ pub fn render_single_file(
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     html.push_str("<title>testmap report</title><style>");
     html.push_str(CSS);
+    html.push_str(theme_css);
     html.push_str("</style></head><body>");
 
     html.push_str("<main class=\"index\"><h1>testmap</h1>");

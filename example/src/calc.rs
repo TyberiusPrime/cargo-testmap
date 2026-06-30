@@ -36,3 +36,4 @@ mod tests {
         assert_eq!(sub(5, 3), 2);
     }
 }
+
