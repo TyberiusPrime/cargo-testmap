@@ -32,51 +32,30 @@ impl TestStatus {
     }
 }
 
-/// Cache (meta.json) schema version. Bump whenever the on-disk shape of a
-/// staged result changes (e.g. a field is added). A cached `meta.json` whose
-/// version doesn't match is treated as a miss and the test is re-collected,
-/// so a stale staging dir from an older cargo-testmap can't silently drop
-/// fields (this is how `failure_output` originally went missing).
-///
-/// v2 adds `binary_fingerprint`: a content hash of the test binary, checked
-/// on load so editing code/tests (cargo rebuild) invalidates the entry
-/// instead of serving stale coverage.
-const META_VERSION: u32 = 2;
-
 /// Per-collect-run constants shared by every test invocation. Bundling them
 /// keeps `run_single`'s argument list short and makes the call sites readable.
 pub struct RunContext<'a> {
     pub tools: &'a LlvmTools,
     pub staging: &'a Path,
     pub workspace_root: &'a Path,
-    pub clean: bool,
 }
 
 /// Run a single test by exact name with a unique profraw, then export LCOV.
 ///
-/// `staging` holds per-test intermediate files (profraw/profdata/lcov/meta) for
-/// incremental resume. `binary_fingerprint` invalidates the resume cache when
-/// the binary is rebuilt (code/tests changed). `cwd` is set as the test
-/// process's working directory so crate-relative paths work as under `cargo test`.
+/// Every test is run fresh on every collection — there is no result cache.
+/// `cwd` is set as the test process's working directory so crate-relative
+/// paths resolve as under `cargo test`. `staging` holds only the transient
+/// profraw/profdata intermediates needed to produce this test's LCOV.
 pub fn run_single(
     target_exe: &Path,
     target_name: &str,
     full_test_path: &str,
-    binary_fingerprint: &str,
     cwd: &Path,
     ctx: &RunContext<'_>,
 ) -> Result<TestCoverage> {
     let hash = fnv1a(&format!("{target_name}::{full_test_path}"));
-    let lcov_path = ctx.staging.join(format!("{hash}.lcov"));
-    let meta_path = ctx.staging.join(format!("{hash}.meta.json"));
     let profraw = ctx.staging.join(format!("{hash}.profraw"));
     let profdata = ctx.staging.join(format!("{hash}.profdata"));
-
-    // Resume: reuse staged results when not forcing a clean collection.
-    if !ctx.clean && lcov_path.exists() && meta_path.exists()
-        && let Some(cov) = load_cached(&lcov_path, &meta_path, ctx.workspace_root, binary_fingerprint) {
-            return Ok(cov);
-        }
 
     let start = Instant::now();
     let output = Command::new(target_exe)
@@ -108,9 +87,6 @@ pub fn run_single(
     let lcov = match export_lcov(ctx.tools, &profraw, &profdata, target_exe) {
         Ok(s) => s,
         Err(e) => {
-            // Clean up so resume doesn't cache a bogus empty result.
-            let _ = std::fs::remove_file(&lcov_path);
-            let _ = std::fs::remove_file(&meta_path);
             return Err(e.context(format!(
                 "no coverage from `{}` (binary not instrumented?)",
                 full_test_path
@@ -118,20 +94,6 @@ pub fn run_single(
         }
     };
     let records = relativize_records(parse_covered(&lcov), ctx.workspace_root);
-
-    // Stage results for resume.
-    let _ = std::fs::write(&lcov_path, &lcov);
-    let _ = std::fs::write(
-        &meta_path,
-        serde_json::json!({
-            "version": META_VERSION,
-            "binary_fingerprint": binary_fingerprint,
-            "status": if ok { "collected" } else { "failed" },
-            "duration_ms": duration_ms,
-            "failure_output": failure_output,
-        })
-        .to_string(),
-    );
 
     Ok(TestCoverage {
         status: if ok { TestStatus::Collected } else { TestStatus::Failed },
@@ -189,9 +151,12 @@ pub fn check_instrumented(target_exe: &Path, test_path: &str, cwd: &Path) -> Res
     if !ok {
         bail!(
             "test binaries are not coverage-instrumented: running `{}` did not \
-             produce a `.profraw`.\n  this happens when cargo reuses a stale, \
-             non-instrumented build in the coverage target dir.\n  fix: re-run \
-             `cargo testmap collect --clean` (it wipes the coverage build dir).",
+             produce a `.profraw`.
+  this happens when cargo reuses a stale, non-instrumented build in the \
+             coverage target dir.
+  fix: delete the coverage build dir ({} under target/testmap/) and re-run \
+             `cargo testmap collect`.",
+            target_exe.display(),
             target_exe.display()
         );
     }
@@ -251,51 +216,3 @@ fn relativize_records(
     out
 }
 
-#[derive(serde::Deserialize)]
-struct Meta {
-    /// `None` on caches written before versioning existed → treated as a miss.
-    #[serde(default)]
-    version: Option<u32>,
-    /// Content hash of the binary this entry was collected against. Compared
-    /// to the current binary's fingerprint on load; mismatch → re-collect.
-    #[serde(default)]
-    binary_fingerprint: String,
-    status: String,
-    duration_ms: u64,
-    #[serde(default)]
-    failure_output: Option<String>,
-}
-
-fn load_cached(
-    lcov_path: &Path,
-    meta_path: &Path,
-    workspace_root: &Path,
-    expected_fingerprint: &str,
-) -> Option<TestCoverage> {
-    let lcov = std::fs::read_to_string(lcov_path).ok()?;
-    let meta: Meta = serde_json::from_str(&std::fs::read_to_string(meta_path).ok()?).ok()?;
-    // Refuse to reuse a cache whose schema predates the current one: a missing
-    // or mismatched version means fields we now rely on (e.g. failure_output)
-    // may be absent. Fall through to a fresh collection instead.
-    if meta.version != Some(META_VERSION) {
-        return None;
-    }
-    // Invalidate when the test binary changed since this entry was written —
-    // i.e. the code or tests were edited and cargo rebuilt. Without this,
-    // resume would silently serve coverage (and pass/fail status) from the
-    // previous binary.
-    if !expected_fingerprint.is_empty() && meta.binary_fingerprint != expected_fingerprint {
-        return None;
-    }
-    let status = if meta.status == "failed" {
-        TestStatus::Failed
-    } else {
-        TestStatus::Collected
-    };
-    Some(TestCoverage {
-        status,
-        duration_ms: meta.duration_ms,
-        records: relativize_records(parse_covered(&lcov), workspace_root),
-        failure_output: meta.failure_output.filter(|s| !s.trim().is_empty()),
-    })
-}

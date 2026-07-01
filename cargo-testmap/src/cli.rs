@@ -66,10 +66,6 @@ pub struct CollectArgs {
     #[arg(long, default_value = "target/testmap/testmap.json")]
     pub output: String,
 
-    /// Force a full re-collection, ignoring any staged results.
-    #[arg(long)]
-    pub clean: bool,
-
     /// Suppress cargo's own output (handled by testmap).
     #[arg(short = 'v', long, default_value_t = false)]
     pub verbose: bool,

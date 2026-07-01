@@ -11,10 +11,6 @@ pub struct TestTarget {
     pub name: String,
     pub kind: String,
     pub executable: PathBuf,
-    /// Content fingerprint (blake3) of `executable`, computed once at build
-    /// time. The resume cache compares this against the stored value to
-    /// invalidate when the binary is rebuilt (i.e. code/tests changed).
-    pub fingerprint: String,
     /// The package directory (parent of the owning Cargo.toml). Used as the
     /// working directory when running the test binary, mirroring `cargo test`,
     /// so tests that open files via paths relative to their crate
@@ -140,22 +136,10 @@ fn build_and_collect(
             .map(PathBuf::from)
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| dir.to_path_buf());
-        // Fingerprint once per binary (not per test) so the resume cache can
-        // tell when cargo has rebuilt it. Failure to read it is non-fatal —
-        // we'd rather collect than block — but it shouldn't happen since the
-        // binary was just produced by the build above.
-        let fingerprint = crate::util::fingerprint_file(&executable).unwrap_or_else(|e| {
-            eprintln!(
-                "warning: could not fingerprint {}: {e}",
-                executable.display()
-            );
-            String::new()
-        });
         targets.push(TestTarget {
             name: target.name,
             kind,
             executable,
-            fingerprint,
             cwd,
         });
     }

@@ -1,4 +1,3 @@
-use anyhow::Context;
 use std::path::{Component, Path, PathBuf};
 
 /// Strip `root` from `path`, returning a relative path. Returns None if `path`
@@ -67,16 +66,4 @@ pub fn fnv1a(s: &str) -> String {
         h = h.wrapping_mul(0x100000001b3);
     }
     format!("{h:016x}")
-}
-
-/// Content fingerprint of a file (blake3 hex). Used to detect when a built
-/// test binary changes — any code or test edit that makes cargo rebuild it
-/// yields a different fingerprint, which invalidates that test's staged cache
-/// entry so coverage is re-collected instead of served stale.
-pub fn fingerprint_file(path: &Path) -> anyhow::Result<String> {
-    let mut hasher = blake3::Hasher::new();
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("fingerprinting {}", path.display()))?;
-    std::io::copy(&mut file, &mut hasher)?;
-    Ok(hasher.finalize().to_hex().to_string())
 }

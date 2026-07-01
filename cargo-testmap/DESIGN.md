@@ -90,10 +90,18 @@ The "omit if more than X tests" filter is applied **during database construction
 Mitigations:
 - **Build once, run many:** Build all test binaries once with instrumentation, then run each test by invoking the binary directly.
 - **Parallel execution:** Run multiple test processes in parallel (controllable with `--jobs`).
-- **Incremental collection:** Write intermediate results after each test. If interrupted, skip already-collected tests on restart.
 - **Filtering:** Allow `--filter <pattern>` to collect only matching tests.
 - **Skip list:** Allow `--skip <pattern>` to skip tests.
-- **Caching:** Compare source hash + test binary hash to determine if re-collection is needed.
+
+**No test-result caching.** Every `collect` runs every matched test from
+scratch — there is no resume cache, no fingerprinting, no stale-data risk.
+Result caching turned out to be a source of subtle correctness bugs (stale
+coverage after a non-source edit like a test fixture, schema drift, TOCTOU
+between the build and the run) for little gain, so it was removed. Cargo's
+own build cache still handles the expensive part (reusing the instrumented
+binaries when nothing changed, rebuilding them when it did); only the per-test
+*run* is repeated. If your tests are slow, that is the cost of always-correct
+coverage.
 
 ### 3.5 Concrete Implementation Approach
 
@@ -384,13 +392,18 @@ Running per individual test function is the ideal but very slow for large projec
 
 **Decision: Per-test-function only for now.** If needed, a `--granularity binary` fast mode can be added later, but per-test-function is the whole point of this tool.
 
-### 9.2 Incremental / Resume Support
+### 9.2 No Result Caching (every collect runs every test)
 
-The collection phase should support resumption:
-- Keep raw per-test LCOV data in a staging directory (`target/testmap/staging/`)
-- Re-thresholding: re-generate the database from staging data without re-running tests
-- On restart, skip tests that already have staging data
-- A `--clean` flag to force full re-collection
+**Decision: no resume / no result cache.** Every `cargo testmap collect`
+re-runs every matched test from scratch and rewrites the database. An earlier
+design proposed a staging-dir resume cache, but it was removed because it was
+a net source of subtle staleness bugs (coverage/status served from a previous
+run after the code, tests, or runtime fixtures like `test_cases/` changed) and
+the fingerprinting needed to make it correct can't see non-binary inputs at
+all. Cargo's build cache still reuses the instrumented binaries when nothing
+changed, so only the (correct, always-fresh) per-test execution repeats. The
+staging dir now holds only the transient `profraw`/`profdata` intermediates
+needed to export a test's LCOV within a single run.
 
 ### 9.3 Coverage Format: LCOV
 
@@ -448,7 +461,6 @@ cargo testmap collect [OPTIONS]
   --threshold <N>           # Omit lines covered by >=N tests (default: 10)
   -j, --jobs <N>           # Parallel test runs (default: num_cpus)
   --output <PATH>          # Database output path (default: target/testmap/testmap.json)
-  --clean                  # Force full re-collection
   -v, --verbose            # Verbose output
 
 # Generate HTML report from DB
@@ -474,8 +486,8 @@ cargo testmap report [OPTIONS]
 
 ### Phase 2: Performance
 - Parallel test execution (`--jobs`)
-- Incremental collection with resume (keep raw per-test data, skip already-collected)
-- Re-threshold without re-running tests (just re-process intermediate data)
+- The instrumented build is reused by cargo's own cache (fast when unchanged);
+  per-test results are never cached — every collect runs every test fresh.
 
 ### Phase 3: Polish
 - `.testmap.toml` configuration

@@ -74,9 +74,6 @@ pub fn run(args: CollectArgs) -> Result<()> {
     };
     let cov_target_dir = testmap_root.join("cov-target");
     let cov_target_dir_str = cov_target_dir.to_string_lossy().into_owned();
-    if args.clean {
-        let _ = std::fs::remove_dir_all(&cov_target_dir);
-    }
     // Assemble the cargo target-selection arguments (forwarded to the build).
     let mut cargo_select: Vec<String> = Vec::new();
     if args.workspace {
@@ -146,10 +143,10 @@ pub fn run(args: CollectArgs) -> Result<()> {
     eprintln!("→ {} test(s) to collect", selected.len());
 
     // --- Step 4: run each test in parallel, accumulating coverage ---------
+    // `staging` holds the transient profraw/profdata intermediates each test
+    // needs to export its LCOV. There is no result cache: every test is run
+    // fresh on every collection.
     let staging = testmap_root.join("staging");
-    if args.clean {
-        let _ = std::fs::remove_dir_all(&staging);
-    }
     std::fs::create_dir_all(&staging)?;
 
     let bar = ProgressBar::new(selected.len() as u64);
@@ -171,7 +168,6 @@ pub fn run(args: CollectArgs) -> Result<()> {
         tools: &tools,
         staging: &staging,
         workspace_root: &workspace_root,
-        clean: args.clean,
     };
 
     let results: Vec<Option<(usize, TestCoverage)>> = indexed
@@ -182,7 +178,6 @@ pub fn run(args: CollectArgs) -> Result<()> {
                 &target.executable,
                 &target.name,
                 &case.full,
-                &target.fingerprint,
                 &target.cwd,
                 &ctx,
             );

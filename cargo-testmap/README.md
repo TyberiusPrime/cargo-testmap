@@ -11,8 +11,15 @@ See [`DESIGN.md`](./DESIGN.md) for the full design document.
 
 ## How it works
 
+
+**`cargo testmap run`** - builds & runs every test under coverage, individually,
+collects the data into $CARGO_TARGET_DIR/testmap and builds the report.
+
+
+## Split invokation
+
 Two phases, with a self-contained JSON database (`testmap.json`) as the
-boundary — so you can iterate on the report without re-running the expensive
+boundary — so the devs can iterate on the report without re-running the expensive
 collection.
 
 1. **`cargo testmap collect`** — builds every test binary once with coverage
