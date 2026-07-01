@@ -28,6 +28,11 @@ pub struct TestEntry {
     pub kind: String,
     pub status: String,
     pub duration_ms: u64,
+    /// Captured output (stderr+stdout) of a test that ran but failed.
+    /// `None` for passing tests. Persisted so the report can surface *why*
+    /// a test failed instead of just tallying the count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_output: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

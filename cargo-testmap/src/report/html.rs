@@ -14,6 +14,8 @@ pub struct TestView<'a> {
     pub kind: &'a str,
     pub status: &'a str,
     pub duration_ms: u64,
+    /// Captured output (stderr+stdout) of a failed test, if any.
+    pub failure_output: Option<&'a str>,
 }
 
 /// Per-file highlighted source (path + one HTML fragment per line).
@@ -232,7 +234,11 @@ pub fn render_directory(
     Ok(())
 }
 
-/// Client-side column sort for the tests catalog.
+/// Client-side column sort for the tests catalog. Pair-aware: each failed
+/// test is followed by a trailing `.failout` row holding its output, so we
+/// sort the primary rows and re-thread their output rows behind them rather
+/// than sorting every `<tr>` independently (which would detach outputs from
+/// their tests).
 const TESTS_SORT_JS: &str = "\
 (function(){var t=document.querySelector('table.tests-table');if(!t)return;\
 var tb=t.tBodies[0];if(!tb)return;var hs=t.querySelectorAll('th[data-sort]');\
@@ -240,11 +246,16 @@ var key=null,dir=1;hs.forEach(function(th){th.addEventListener('click',function(
 var k=th.dataset.sort,num=th.dataset.numeric==='1';dir=(key===k)?-dir:1;key=k;\
 hs.forEach(function(h){h.classList.remove('sort-asc','sort-desc');});\
 th.classList.add(dir>0?'sort-asc':'sort-desc');var c=th.cellIndex;\
-var rows=Array.prototype.slice.call(tb.rows);rows.sort(function(a,b){\
-var av=a.cells[c].dataset.v;if(av===undefined)av=a.cells[c].textContent.trim();\
-var bv=b.cells[c].dataset.v;if(bv===undefined)bv=b.cells[c].textContent.trim();\
+var rows=Array.prototype.slice.call(tb.rows);var pairs=[];\
+for(var i=0;i<rows.length;){var main=rows[i++];var extras=[];\
+while(i<rows.length&&rows[i].classList.contains('failout')){extras.push(rows[i++]);}\
+pairs.push([main,extras]);}\
+pairs.sort(function(a,b){var ra=a[0],rb=b[0];\
+var av=ra.cells[c].dataset.v;if(av===undefined)av=ra.cells[c].textContent.trim();\
+var bv=rb.cells[c].dataset.v;if(bv===undefined)bv=rb.cells[c].textContent.trim();\
 if(num){av=+av;bv=+bv;}return av<bv?-dir:av>bv?dir:0;});\
-rows.forEach(function(r){tb.appendChild(r);});});});})();";
+while(tb.firstChild)tb.removeChild(tb.firstChild);\
+pairs.forEach(function(p){tb.appendChild(p[0]);p[1].forEach(function(e){tb.appendChild(e);});});});});})();";
 
 /// Render `tests.html` — a catalog of every test testmap observed, with the
 /// number of mapped lines each one covers. Tests that ran but covered no
@@ -261,6 +272,7 @@ pub fn render_tests_page(
     let counts = per_test_counts(tests.len(), coverage);
     let zero = counts.iter().filter(|&&c| c == 0).count();
     let nonzero = tests.len().saturating_sub(zero);
+    let failed = tests.iter().filter(|t| t.status == "failed").count();
 
     let mut html = String::new();
     html.push_str("<!doctype html><html lang=\"en\"><head>");
@@ -280,15 +292,23 @@ pub fn render_tests_page(
     html.push_str("</div>");
 
     html.push_str("<main class=\"tests-page\">");
-    html.push_str(&format!(
-        "<p class=\"meta\">{} test(s) observed · {} cover ≥1 mapped line · \
+    // Summary line. The failed count is always shown so the user can tell at a
+    // glance whether anything broke; it's highlighted only when non-zero.
+    let mut meta = format!("<p class=\"meta\">{} test(s) observed · ", tests.len());
+    meta.push_str(&if failed > 0 {
+        format!("<span class=\"failcount\">{} failed</span> · ", failed)
+    } else {
+        format!("<span class=\"muted\">{} failed</span> · ", failed)
+    });
+    meta.push_str(&format!(
+        "{} cover ≥1 mapped line · \
          <span class=\"zerocount\">{} cover 0 mapped lines</span> \
          <span class=\"muted\">(ran but exercised no snapshotted code — \
          often filtered, skipped, or broken)</span></p>",
-        tests.len(),
         nonzero,
         zero
     ));
+    html.push_str(&meta);
 
     html.push_str("<table class=\"tests-table\"><thead><tr>");
     html.push_str("<th data-sort=\"idx\">#</th>");
@@ -347,6 +367,27 @@ pub fn render_tests_page(
             t.duration_ms
         ));
         html.push_str("</tr>");
+        // A failed test's captured output lives in a trailing full-width row
+        // (kept attached to this test during sort — see TESTS_SORT_JS). This
+        // is the report's way of answering "why did this test fail?".
+        if failed {
+            match t.failure_output.filter(|s| !s.trim().is_empty()) {
+                Some(out) => {
+                    html.push_str(&format!(
+                        "<tr class=\"failout\"><td colspan=\"7\">\
+                         <details><summary>output</summary>\
+                         <pre class=\"failout-pre\">{}</pre></details></td></tr>",
+                        escape(out)
+                    ));
+                }
+                None => {
+                    html.push_str(
+                        "<tr class=\"failout\"><td colspan=\"7\">\
+                         <span class=\"muted\">(no output captured)</span></td></tr>",
+                    );
+                }
+            }
+        }
     }
     html.push_str("</tbody></table>");
     html.push_str("</main>");

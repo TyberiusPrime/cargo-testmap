@@ -12,6 +12,9 @@ pub struct TestCoverage {
     pub duration_ms: u64,
     /// (relative_path, covered_lines) per LCOV record.
     pub records: Vec<(String, Vec<u32>)>,
+    /// Captured output (stderr + stdout) of a failing test, so the caller can
+    /// surface *why* it failed. `None` for passing tests.
+    pub failure_output: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -29,45 +32,80 @@ impl TestStatus {
     }
 }
 
+/// Cache (meta.json) schema version. Bump whenever the on-disk shape of a
+/// staged result changes (e.g. a field is added). A cached `meta.json` whose
+/// version doesn't match is treated as a miss and the test is re-collected,
+/// so a stale staging dir from an older cargo-testmap can't silently drop
+/// fields (this is how `failure_output` originally went missing).
+///
+/// v2 adds `binary_fingerprint`: a content hash of the test binary, checked
+/// on load so editing code/tests (cargo rebuild) invalidates the entry
+/// instead of serving stale coverage.
+const META_VERSION: u32 = 2;
+
+/// Per-collect-run constants shared by every test invocation. Bundling them
+/// keeps `run_single`'s argument list short and makes the call sites readable.
+pub struct RunContext<'a> {
+    pub tools: &'a LlvmTools,
+    pub staging: &'a Path,
+    pub workspace_root: &'a Path,
+    pub clean: bool,
+}
+
 /// Run a single test by exact name with a unique profraw, then export LCOV.
 ///
 /// `staging` holds per-test intermediate files (profraw/profdata/lcov/meta) for
-/// incremental resume. `cache_key` uniquely identifies this (binary, test).
+/// incremental resume. `binary_fingerprint` invalidates the resume cache when
+/// the binary is rebuilt (code/tests changed). `cwd` is set as the test
+/// process's working directory so crate-relative paths work as under `cargo test`.
 pub fn run_single(
     target_exe: &Path,
     target_name: &str,
     full_test_path: &str,
-    tools: &LlvmTools,
-    staging: &Path,
-    workspace_root: &Path,
-    clean: bool,
+    binary_fingerprint: &str,
+    cwd: &Path,
+    ctx: &RunContext<'_>,
 ) -> Result<TestCoverage> {
     let hash = fnv1a(&format!("{target_name}::{full_test_path}"));
-    let lcov_path = staging.join(format!("{hash}.lcov"));
-    let meta_path = staging.join(format!("{hash}.meta.json"));
-    let profraw = staging.join(format!("{hash}.profraw"));
-    let profdata = staging.join(format!("{hash}.profdata"));
+    let lcov_path = ctx.staging.join(format!("{hash}.lcov"));
+    let meta_path = ctx.staging.join(format!("{hash}.meta.json"));
+    let profraw = ctx.staging.join(format!("{hash}.profraw"));
+    let profdata = ctx.staging.join(format!("{hash}.profdata"));
 
     // Resume: reuse staged results when not forcing a clean collection.
-    if !clean && lcov_path.exists() && meta_path.exists()
-        && let Some(cov) = load_cached(&lcov_path, &meta_path, workspace_root) {
+    if !ctx.clean && lcov_path.exists() && meta_path.exists()
+        && let Some(cov) = load_cached(&lcov_path, &meta_path, ctx.workspace_root, binary_fingerprint) {
             return Ok(cov);
         }
 
     let start = Instant::now();
-    let status = Command::new(target_exe)
+    let output = Command::new(target_exe)
+        .current_dir(cwd)
         .arg("--exact")
         .arg(full_test_path)
         // A unique, deterministic profile file — no PID, safe under parallelism.
         .env("LLVM_PROFILE_FILE", &profraw)
         .output();
-    let ok = matches!(status, Ok(o) if o.status.success());
+    let ok = matches!(&output, Ok(o) if o.status.success());
     let duration_ms = start.elapsed().as_millis() as u64;
+
+    // A failing test still yields (partial) coverage, so a non-zero exit does
+    // not abort the run. But the captured output is the only place the actual
+    // error/panic lives — retain it so the caller can print it instead of
+    // silently burying the failure behind a bare count.
+    let failure_output = if ok {
+        None
+    } else {
+        Some(match &output {
+            Ok(o) => combine_test_output(&o.stderr, &o.stdout),
+            Err(e) => format!("failed to spawn `{}`: {e}", target_exe.display()),
+        })
+    };
 
     // Export LCOV even if the test failed — partial coverage is still useful.
     // If the profraw is missing, the binary wasn't instrumented for this run;
     // surface that instead of silently recording empty coverage.
-    let lcov = match export_lcov(tools, &profraw, &profdata, target_exe) {
+    let lcov = match export_lcov(ctx.tools, &profraw, &profdata, target_exe) {
         Ok(s) => s,
         Err(e) => {
             // Clean up so resume doesn't cache a bogus empty result.
@@ -79,15 +117,18 @@ pub fn run_single(
             )));
         }
     };
-    let records = relativize_records(parse_covered(&lcov), workspace_root);
+    let records = relativize_records(parse_covered(&lcov), ctx.workspace_root);
 
     // Stage results for resume.
     let _ = std::fs::write(&lcov_path, &lcov);
     let _ = std::fs::write(
         &meta_path,
         serde_json::json!({
+            "version": META_VERSION,
+            "binary_fingerprint": binary_fingerprint,
             "status": if ok { "collected" } else { "failed" },
             "duration_ms": duration_ms,
+            "failure_output": failure_output,
         })
         .to_string(),
     );
@@ -96,7 +137,26 @@ pub fn run_single(
         status: if ok { TestStatus::Collected } else { TestStatus::Failed },
         duration_ms,
         records,
+        failure_output,
     })
+}
+
+/// Combine a failing test's stderr and stdout into one string: stderr first
+/// (where panics and assertions land), then stdout. Empty halves are dropped.
+fn combine_test_output(stderr: &[u8], stdout: &[u8]) -> String {
+    let mut out = String::new();
+    let stderr = String::from_utf8_lossy(stderr);
+    let stdout = String::from_utf8_lossy(stdout);
+    if !stderr.trim().is_empty() {
+        out.push_str(stderr.trim());
+    }
+    if !stdout.trim().is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n--- stdout ---\n");
+        }
+        out.push_str(stdout.trim());
+    }
+    out
 }
 
 /// Smoke-test that the built binaries are actually coverage-instrumented.
@@ -107,7 +167,7 @@ pub fn run_single(
 /// that cargo reused) and the whole collection would silently yield nothing.
 ///
 /// `test_path` should be a real test name within `target_exe`.
-pub fn check_instrumented(target_exe: &Path, test_path: &str) -> Result<()> {
+pub fn check_instrumented(target_exe: &Path, test_path: &str, cwd: &Path) -> Result<()> {
     let sink = std::env::temp_dir().join(format!(
         "testmap-smoke-{}-{}.profraw",
         std::process::id(),
@@ -115,6 +175,7 @@ pub fn check_instrumented(target_exe: &Path, test_path: &str) -> Result<()> {
     ));
     let _ = std::fs::remove_file(&sink);
     let ran = Command::new(target_exe)
+        .current_dir(cwd)
         .arg("--exact")
         .arg(test_path)
         .env("LLVM_PROFILE_FILE", &sink)
@@ -192,17 +253,40 @@ fn relativize_records(
 
 #[derive(serde::Deserialize)]
 struct Meta {
+    /// `None` on caches written before versioning existed → treated as a miss.
+    #[serde(default)]
+    version: Option<u32>,
+    /// Content hash of the binary this entry was collected against. Compared
+    /// to the current binary's fingerprint on load; mismatch → re-collect.
+    #[serde(default)]
+    binary_fingerprint: String,
     status: String,
     duration_ms: u64,
+    #[serde(default)]
+    failure_output: Option<String>,
 }
 
 fn load_cached(
     lcov_path: &Path,
     meta_path: &Path,
     workspace_root: &Path,
+    expected_fingerprint: &str,
 ) -> Option<TestCoverage> {
     let lcov = std::fs::read_to_string(lcov_path).ok()?;
     let meta: Meta = serde_json::from_str(&std::fs::read_to_string(meta_path).ok()?).ok()?;
+    // Refuse to reuse a cache whose schema predates the current one: a missing
+    // or mismatched version means fields we now rely on (e.g. failure_output)
+    // may be absent. Fall through to a fresh collection instead.
+    if meta.version != Some(META_VERSION) {
+        return None;
+    }
+    // Invalidate when the test binary changed since this entry was written —
+    // i.e. the code or tests were edited and cargo rebuilt. Without this,
+    // resume would silently serve coverage (and pass/fail status) from the
+    // previous binary.
+    if !expected_fingerprint.is_empty() && meta.binary_fingerprint != expected_fingerprint {
+        return None;
+    }
     let status = if meta.status == "failed" {
         TestStatus::Failed
     } else {
@@ -212,5 +296,6 @@ fn load_cached(
         status,
         duration_ms: meta.duration_ms,
         records: relativize_records(parse_covered(&lcov), workspace_root),
+        failure_output: meta.failure_output.filter(|s| !s.trim().is_empty()),
     })
 }

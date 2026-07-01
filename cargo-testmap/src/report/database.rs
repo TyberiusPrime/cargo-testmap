@@ -32,6 +32,9 @@ pub struct TestEntry {
     pub status: String,
     #[allow(dead_code)]
     pub duration_ms: u64,
+    /// Captured output of a failed test; shown in the tests catalog.
+    #[serde(default)]
+    pub failure_output: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]

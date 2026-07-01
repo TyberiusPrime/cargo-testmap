@@ -11,6 +11,15 @@ pub struct TestTarget {
     pub name: String,
     pub kind: String,
     pub executable: PathBuf,
+    /// Content fingerprint (blake3) of `executable`, computed once at build
+    /// time. The resume cache compares this against the stored value to
+    /// invalidate when the binary is rebuilt (i.e. code/tests changed).
+    pub fingerprint: String,
+    /// The package directory (parent of the owning Cargo.toml). Used as the
+    /// working directory when running the test binary, mirroring `cargo test`,
+    /// so tests that open files via paths relative to their crate
+    /// (e.g. `"../test_cases/..."`) resolve identically.
+    pub cwd: PathBuf,
 }
 
 /// A single test function within a test target.
@@ -48,6 +57,9 @@ struct Artifact {
     target: Option<Target>,
     profile: Option<Profile>,
     executable: Option<String>,
+    /// Absolute path to the owning Cargo.toml; its parent is the package
+    /// directory `cargo test` runs the binary from.
+    manifest_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -118,10 +130,33 @@ fn build_and_collect(
             continue;
         }
         let kind = target.kind.last().cloned().unwrap_or_default();
+        let executable = PathBuf::from(&exe);
+        // Package directory = parent of Cargo.toml. Falls back to the
+        // invocation dir only if cargo omitted the field (it never does in
+        // practice), so we still run rather than fail.
+        let cwd = art
+            .manifest_path
+            .as_deref()
+            .map(PathBuf::from)
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| dir.to_path_buf());
+        // Fingerprint once per binary (not per test) so the resume cache can
+        // tell when cargo has rebuilt it. Failure to read it is non-fatal —
+        // we'd rather collect than block — but it shouldn't happen since the
+        // binary was just produced by the build above.
+        let fingerprint = crate::util::fingerprint_file(&executable).unwrap_or_else(|e| {
+            eprintln!(
+                "warning: could not fingerprint {}: {e}",
+                executable.display()
+            );
+            String::new()
+        });
         targets.push(TestTarget {
             name: target.name,
             kind,
-            executable: PathBuf::from(exe),
+            executable,
+            fingerprint,
+            cwd,
         });
     }
 
@@ -140,6 +175,7 @@ pub fn list_tests(target: &TestTarget) -> Result<Vec<TestCase>> {
         crate::util::fnv1a(&target.executable.to_string_lossy()),
     ));
     let out = Command::new(&target.executable)
+        .current_dir(&target.cwd)
         .args(["--list", "--format", "terse"])
         .env("LLVM_PROFILE_FILE", &sink)
         .output()

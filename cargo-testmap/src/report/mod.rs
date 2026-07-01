@@ -28,6 +28,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             kind: &t.kind,
             status: &t.status,
             duration_ms: t.duration_ms,
+            failure_output: t.failure_output.as_deref(),
         })
         .collect();
 

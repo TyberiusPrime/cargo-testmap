@@ -159,5 +159,25 @@ main.tests-page { padding: 1rem 2rem 5rem; }
 .tests-table tr.zero td.num { color: var(--fail); font-weight: 600; }
 .tests-table tr.zero td.tname { color: var(--fg-dim); }
 .tests-table tr.failed td.status { color: var(--fail); }
+.tests-table tr.failout > td {
+  padding: .15rem .6rem .45rem;
+  background: var(--bg-row);
+  border-bottom: 1px solid var(--border);
+}
+.tests-table tr.failout details summary { cursor: pointer; color: var(--fail); }
+.failout-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: .4rem 0 0;
+  padding: .5rem .7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: .3rem;
+  font-size: .85rem;
+  color: var(--fg);
+  max-height: 26rem;
+  overflow: auto;
+}
+.meta .failcount { color: var(--fail); font-weight: 600; }
 .meta .zerocount { color: var(--fail); font-weight: 600; }
 .meta .muted { color: var(--fg-dim); }

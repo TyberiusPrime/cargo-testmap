@@ -62,6 +62,16 @@ pub fn run(args: CollectArgs) -> Result<()> {
         .parent()
         .unwrap_or_else(|| Path::new("target/testmap"))
         .to_path_buf();
+    // Absolutize against the invocation dir: test binaries now run with their
+    // *package* dir as CWD (mirroring `cargo test`), so a relative
+    // `LLVM_PROFILE_FILE`/staging path would be resolved against the package
+    // dir and land in the wrong place. An absolute path is correct regardless
+    // of the test's CWD.
+    let testmap_root = if testmap_root.is_absolute() {
+        testmap_root
+    } else {
+        std::env::current_dir().unwrap_or_default().join(&testmap_root)
+    };
     let cov_target_dir = testmap_root.join("cov-target");
     let cov_target_dir_str = cov_target_dir.to_string_lossy().into_owned();
     if args.clean {
@@ -129,7 +139,7 @@ pub fn run(args: CollectArgs) -> Result<()> {
     // Fail fast with a clear message rather than silently emitting an empty DB.
     {
         let (probe_case, probe_target) = &selected[0];
-        coverage_run::check_instrumented(&probe_target.executable, &probe_case.full)
+        coverage_run::check_instrumented(&probe_target.executable, &probe_case.full, &probe_target.cwd)
             .context("instrumentation check failed")?;
     }
 
@@ -157,6 +167,13 @@ pub fn run(args: CollectArgs) -> Result<()> {
     let mut indexed: Vec<(TestCase, TestTarget)> = selected.into_iter().collect();
     indexed.sort_by(|a, b| a.0.full.cmp(&b.0.full).then(a.0.target_index.cmp(&b.0.target_index)));
 
+    let ctx = coverage_run::RunContext {
+        tools: &tools,
+        staging: &staging,
+        workspace_root: &workspace_root,
+        clean: args.clean,
+    };
+
     let results: Vec<Option<(usize, TestCoverage)>> = indexed
         .par_iter()
         .enumerate()
@@ -165,10 +182,9 @@ pub fn run(args: CollectArgs) -> Result<()> {
                 &target.executable,
                 &target.name,
                 &case.full,
-                &tools,
-                &staging,
-                &workspace_root,
-                args.clean,
+                &target.fingerprint,
+                &target.cwd,
+                &ctx,
             );
             bar.inc(1);
             match r {
@@ -182,6 +198,40 @@ pub fn run(args: CollectArgs) -> Result<()> {
         .collect();
     bar.finish_and_clear();
 
+    // --- Step 4b: surface failing tests -----------------------------------
+    // Coverage is collected even for failing tests (partial coverage is
+    // useful), so a non-zero exit does not abort the run. But silently
+    // tallying failures means the user never sees *why* a test broke. Print
+    // each failing test with its captured output so it can be noticed and
+    // fixed — collected after the bar so parallel output isn't interleaved.
+    let mut failures: u64 = 0;
+    {
+        let mut failed: Vec<(&str, &str)> = Vec::new();
+        for r in &results {
+            let Some((idx, cov)) = r else { continue };
+            if matches!(cov.status, coverage_run::TestStatus::Failed) {
+                failures += 1;
+                failed.push((
+                    indexed[*idx].0.full.as_str(),
+                    cov.failure_output.as_deref().unwrap_or(""),
+                ));
+            }
+        }
+        if !failed.is_empty() {
+            eprintln!("→ {} test(s) failed during collection:", failed.len());
+            for (name, output) in failed {
+                if output.trim().is_empty() {
+                    eprintln!("  ✗ {name} (no output captured)");
+                } else {
+                    eprintln!("  ✗ {name}:");
+                    for line in output.lines() {
+                        eprintln!("    {line}");
+                    }
+                }
+            }
+        }
+    }
+
     // --- Step 5: build the test table & reverse map -----------------------
     let mut tests: Vec<TestEntry> = indexed
         .iter()
@@ -192,17 +242,15 @@ pub fn run(args: CollectArgs) -> Result<()> {
             kind: target.kind.clone(),
             status: "collected".to_string(), // refined below
             duration_ms: 0,
+            failure_output: None,
         })
         .collect();
     let mut map = ReverseMap::new();
-    let mut failures = 0u64;
     for r in results {
         let Some((idx, cov)) = r else { continue };
-        if matches!(cov.status, coverage_run::TestStatus::Failed) {
-            failures += 1;
-        }
         tests[idx].status = cov.status.as_str().to_string();
         tests[idx].duration_ms = cov.duration_ms;
+        tests[idx].failure_output = cov.failure_output;
         for (rel, lines) in cov.records {
             for line in lines {
                 map.record(&rel, line, idx as u32);
