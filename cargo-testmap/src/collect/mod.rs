@@ -7,7 +7,7 @@ pub mod test_discovery;
 use crate::cli::CollectArgs;
 use crate::config::Config;
 use anyhow::{Context, Result};
-use database::{Database, Metadata, ReverseMap, SourceFile, TestEntry};
+use database::{Database, ExecutableMap, Metadata, ReverseMap, SourceFile, TestEntry};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use regex::Regex;
@@ -245,11 +245,15 @@ pub fn run(args: CollectArgs) -> Result<()> {
         })
         .collect();
     let mut map = ReverseMap::new();
+    let mut executable = ExecutableMap::new();
     for r in results {
         let Some((idx, cov)) = r else { continue };
         tests[idx].status = cov.status.as_str().to_string();
         tests[idx].duration_ms = cov.duration_ms;
         tests[idx].failure_output = cov.failure_output;
+        for (rel, lines) in cov.executable {
+            executable.record(&rel, &lines);
+        }
         for (rel, lines) in cov.records {
             for line in lines {
                 map.record(&rel, line, idx as u32);
@@ -259,7 +263,7 @@ pub fn run(args: CollectArgs) -> Result<()> {
 
     // --- Step 6: apply threshold + snapshot sources, write DB -------------
     eprintln!("→ writing database (threshold = {threshold})…");
-    let sources: BTreeMap<String, SourceFile> = map.finalize(threshold, &workspace_root)?;
+    let sources: BTreeMap<String, SourceFile> = map.finalize(&executable, threshold, &workspace_root)?;
 
     let db = Database {
         version: 1,
@@ -277,8 +281,9 @@ pub fn run(args: CollectArgs) -> Result<()> {
     db.write(&out)?;
     let n_files = db.sources.len();
     let n_lines: usize = db.sources.values().map(|s| s.lines.len()).sum();
+    let n_exec: usize = db.sources.values().map(|s| s.executable.len()).sum();
     eprintln!(
-        "✓ wrote {} ({} test(s){}, {} source file(s), {} mapped line(s))",
+        "✓ wrote {} ({} test(s){}, {} source file(s), {} mapped line(s), {} executable line(s))",
         out.display(),
         db.tests.len(),
         if failures > 0 {
@@ -287,7 +292,8 @@ pub fn run(args: CollectArgs) -> Result<()> {
             String::new()
         },
         n_files,
-        n_lines
+        n_lines,
+        n_exec
     );
     Ok(())
 }

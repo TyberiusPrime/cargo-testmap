@@ -47,6 +47,13 @@ pub struct SourceFile {
     /// an "above threshold" note.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub above_threshold: BTreeMap<String, AboveThreshold>,
+    /// Every executable (instrumented) line number in the file, covered or not.
+    /// Unioned across all collected tests' LCOV `DA` records. The report uses
+    /// this — together with the covered sets above — to compute coverage
+    /// percentages per file, to surface files/lines missing coverage, and to
+    /// know which uncovered lines are real code (vs. blanks/comments).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executable: Vec<u32>,
 }
 
 /// Coverage summary for a line hit by >= threshold tests.
@@ -92,38 +99,64 @@ impl ReverseMap {
     }
 
     /// Apply the threshold filter and snapshot source file contents.
+    ///
+    /// `executable` carries the full executable-line set per file (union of
+    /// every test's LCOV `DA` records). It drives which files get included: a
+    /// file with executable lines but *zero* covered lines is still kept so
+    /// the report can show it as missing coverage.
     pub fn finalize(
         self,
+        executable: &ExecutableMap,
         threshold: u32,
         workspace_root: &Path,
     ) -> anyhow::Result<BTreeMap<String, SourceFile>> {
+        // Files to emit = every file with executable lines, plus any file the
+        // reverse map touched (defensively — covered ⊆ executable, so the
+        // executable set is the true superset, but this keeps a missed
+        // executable record from silently dropping a covered file).
+        let mut all_files: BTreeSet<String> = executable.lines().keys().cloned().collect();
+        all_files.extend(self.0.keys().cloned());
+
         let mut out = BTreeMap::new();
-        for (rel_path, lines) in self.0 {
+        for rel_path in all_files {
+            let exec_sorted: Vec<u32> = {
+                let mut v: Vec<u32> = executable
+                    .lines()
+                    .get(&rel_path)
+                    .map(|s| s.iter().copied().collect())
+                    .unwrap_or_default();
+                v.sort_unstable();
+                v.dedup();
+                v
+            };
+
             let mut filtered: BTreeMap<String, Vec<u32>> = BTreeMap::new();
             let mut above: BTreeMap<String, AboveThreshold> = BTreeMap::new();
-            for (line, tests) in lines {
-                let count = tests.len() as u32;
-                if count >= threshold {
-                    // Too many tests to list.  Keep a deterministic random
-                    // sample (size threshold-1) plus the total, so the report
-                    // can show *something* useful with an "above threshold" note.
-                    let mut all: Vec<u32> = tests.into_iter().collect();
-                    all.sort_unstable();
-                    let want = threshold.saturating_sub(1) as usize;
-                    let seed = crate::util::fnv1a_u64(&format!("{rel_path}:{line}"));
-                    let sample = sample_sorted(&all, want, seed);
-                    above.insert(
-                        line.to_string(),
-                        AboveThreshold { total: count, sample },
-                    );
-                } else {
-                    let mut v: Vec<u32> = tests.into_iter().collect();
-                    v.sort_unstable();
-                    filtered.insert(line.to_string(), v);
+            if let Some(lines) = self.0.get(&rel_path) {
+                for (line, tests) in lines {
+                    let count = tests.len() as u32;
+                    if count >= threshold {
+                        // Too many tests to list.  Keep a deterministic random
+                        // sample (size threshold-1) plus the total, so the report
+                        // can show *something* useful with an "above threshold" note.
+                        let mut all: Vec<u32> = tests.iter().copied().collect();
+                        all.sort_unstable();
+                        let want = threshold.saturating_sub(1) as usize;
+                        let seed = crate::util::fnv1a_u64(&format!("{rel_path}:{line}"));
+                        let sample = sample_sorted(&all, want, seed);
+                        above.insert(
+                            line.to_string(),
+                            AboveThreshold { total: count, sample },
+                        );
+                    } else {
+                        let mut v: Vec<u32> = tests.iter().copied().collect();
+                        v.sort_unstable();
+                        filtered.insert(line.to_string(), v);
+                    }
                 }
             }
-            if filtered.is_empty() && above.is_empty() {
-                // No interesting lines for this file — skip it entirely.
+            // A file with no executable lines at all carries no signal — skip it.
+            if exec_sorted.is_empty() && filtered.is_empty() && above.is_empty() {
                 continue;
             }
             let abs = workspace_root.join(&rel_path);
@@ -143,10 +176,34 @@ impl ReverseMap {
                     content,
                     lines: filtered,
                     above_threshold: above,
+                    executable: exec_sorted,
                 },
             );
         }
         Ok(out)
+    }
+}
+
+/// Accumulator for the per-file executable-line set (union of every test's
+/// LCOV `DA` records). Unlike [`ReverseMap`] this is keyed only by file → set
+/// of line numbers; it carries no test attribution.
+pub struct ExecutableMap(BTreeMap<String, BTreeSet<u32>>);
+
+impl ExecutableMap {
+    pub fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn record(&mut self, rel_path: &str, lines: &[u32]) {
+        self.0
+            .entry(rel_path.to_string())
+            .or_default()
+            .extend(lines.iter().copied());
+    }
+
+    /// Read-only view of the per-file executable-line sets.
+    pub fn lines(&self) -> &BTreeMap<String, BTreeSet<u32>> {
+        &self.0
     }
 }
 

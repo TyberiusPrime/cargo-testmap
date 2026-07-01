@@ -76,24 +76,28 @@ pre.source td.lc {
   white-space: pre;
   width: 100%;
 }
-/* A subtle marker that this line has mapped tests. */
-pre.source tr.cov td.ln::before {
+/* Gutter dots: one per executable line, colored by classification.
+   green = covered, dim = uncovered (a gap), white = excluded,
+   pink = excluded-but-covered, grey = ignored. */
+pre.source tr.cov-covered td.ln::before,
+pre.source tr.cov-uncovered td.ln::before,
+pre.source tr.cov-excluded td.ln::before,
+pre.source tr.cov-excl-covered td.ln::before,
+pre.source tr.cov-ignored td.ln::before {
   content: "•";
-  color: #99c794;
   margin-right: .4ch;
 }
-/* Above-threshold lines: covered by too many tests to list.  Same dot, but
-   dimmed so they read differently from lines with an enumerable test list. */
-pre.source tr.cov-above td.ln::before {
-  color: #5c6370;
-}
+pre.source tr.cov-covered    td.ln::before { color: var(--dot-covered); }
+pre.source tr.cov-uncovered  td.ln::before { color: var(--dot-uncovered); opacity: .6; }
+pre.source tr.cov-excluded   td.ln::before { color: var(--dot-excluded); }
+pre.source tr.cov-excl-covered td.ln::before { color: var(--dot-excl-covered); }
+pre.source tr.cov-ignored    td.ln::before { color: var(--dot-ignored); }
 
 /* Hover & pinned states. */
 pre.source tr.hover { background: var(--bg-hover); }
 pre.source tr.hover td.ln { color: #fff; }
 pre.source tr.pinned { background: var(--bg-pin); }
 pre.source tr.pinned td.ln { color: #d8e6a8; }
-
 /* Bottom test panel. */
 .panel {
   position: sticky;
@@ -132,8 +136,45 @@ pre.source tr.pinned td.ln { color: #d8e6a8; }
 .panel .tname { color: var(--fg); }
 
 /* ----------------------------------------------------------------------- */
-/* Tests catalog page (tests.html)                                        */
+/* Index / single-file coverage summary & legend                         */
 /* ----------------------------------------------------------------------- */
+.index .total,
+.toolbar .toolbar-stats,
+.filelist .stats {
+  font-size: .9rem;
+}
+.index .total { margin: 0 0 1rem; color: var(--fg); }
+.index .total .pct,
+.filelist .stats .pct { color: var(--fg-dim); }
+.index .total .covered,
+.filelist .stats .covered { color: var(--dot-covered); font-weight: 600; }
+.index .total .coverable,
+.filelist .stats .coverable { color: var(--fg); }
+.index .total .gap,
+.filelist .stats .gap { color: var(--fail); font-weight: 600; }
+.toolbar .toolbar-stats { margin-left: auto; color: var(--fg-dim); }
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8rem 1.2rem;
+  margin: 0 0 1.5rem;
+  font-size: .82rem;
+  color: var(--fg-dim);
+}
+.legend > span { display: inline-flex; align-items: center; }
+.legend .dot {
+  display: inline-block;
+  width: .62em;
+  height: .62em;
+  border-radius: 50%;
+  margin-right: .35rem;
+  background: var(--fg-dim);
+}
+.legend .dot.covered      { background: var(--dot-covered); }
+.legend .dot.uncovered    { background: var(--dot-uncovered); opacity: .6; }
+.legend .dot.excluded     { background: var(--dot-excluded); }
+.legend .dot.excl-covered { background: var(--dot-excl-covered); }
+.legend .dot.ignored      { background: var(--dot-ignored); }
 main.tests-page { padding: 1rem 2rem 5rem; }
 .tests-table {
   width: 100%;

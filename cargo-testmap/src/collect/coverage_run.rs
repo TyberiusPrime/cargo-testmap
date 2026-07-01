@@ -1,4 +1,4 @@
-use crate::collect::lcov::parse_covered;
+use crate::collect::lcov::parse;
 use crate::collect::llvm::LlvmTools;
 use crate::util::{fnv1a, relativize};
 use anyhow::{bail, Result};
@@ -10,8 +10,14 @@ use std::time::Instant;
 pub struct TestCoverage {
     pub status: TestStatus,
     pub duration_ms: u64,
-    /// (relative_path, covered_lines) per LCOV record.
+    /// (relative_path, covered_lines) per LCOV record — the lines this test
+    /// actually executed (count > 0).
     pub records: Vec<(String, Vec<u32>)>,
+    /// (relative_path, executable_lines) per LCOV record — every instrumented
+    /// line, covered or not. Unioned across tests this gives the file's full
+    /// executable set, which the report needs to spot uncovered lines and to
+    /// classify excluded/ignored lines.
+    pub executable: Vec<(String, Vec<u32>)>,
     /// Captured output (stderr + stdout) of a failing test, so the caller can
     /// surface *why* it failed. `None` for passing tests.
     pub failure_output: Option<String>,
@@ -107,12 +113,20 @@ pub fn run_single(
     }
     // Export LCOV even if the test failed — partial coverage is still useful.
     let lcov = export_lcov(ctx.tools, &profraws, &profdata, target_exe, ctx.objects)?;
-    let records = relativize_records(parse_covered(&lcov), ctx.workspace_root);
+    let mut records: Vec<(String, Vec<u32>)> = Vec::new();
+    let mut executable: Vec<(String, Vec<u32>)> = Vec::new();
+    for (rel, file_cov) in relativize_files(parse(&lcov), ctx.workspace_root) {
+        executable.push((rel.clone(), file_cov.executable));
+        if !file_cov.covered.is_empty() {
+            records.push((rel, file_cov.covered));
+        }
+    }
 
     Ok(TestCoverage {
         status: if ok { TestStatus::Collected } else { TestStatus::Failed },
         duration_ms,
         records,
+        executable,
         failure_output,
     })
 }
@@ -226,18 +240,18 @@ fn export_lcov(
     Ok(String::from_utf8_lossy(&export.stdout).into_owned())
 }
 
-fn relativize_records(
-    records: Vec<(String, Vec<u32>)>,
+fn relativize_files<T>(
+    records: Vec<(String, T)>,
     workspace_root: &Path,
-) -> Vec<(String, Vec<u32>)> {
+) -> Vec<(String, T)> {
     let mut out = Vec::with_capacity(records.len());
-    for (abs, lines) in records {
+    for (abs, payload) in records {
         let p = PathBuf::from(&abs);
         let Some(rel) = relativize(&p, workspace_root) else {
             // Out-of-workspace file (e.g. std/core) — ignore.
             continue;
         };
-        out.push((rel.to_string_lossy().into_owned(), lines));
+        out.push((rel.to_string_lossy().into_owned(), payload));
     }
     out
 }

@@ -102,6 +102,12 @@ pub struct ThemeColors {
     pub border: String,
     pub accent: String,
     pub fail: String,
+    /// Gutter-dot colors for line classification (see classify.rs).
+    pub dot_covered: String,
+    pub dot_uncovered: String,
+    pub dot_excluded: String,
+    pub dot_excl_covered: String,
+    pub dot_ignored: String,
     #[allow(dead_code)]
     pub is_dark: bool,
 }
@@ -129,6 +135,7 @@ impl ThemeColors {
             [0u8, 0, 0]
         };
         let green = [0x99u8, 0xc7, 0x94];
+        let pink = if is_dark { [0xffu8, 0x79, 0xc6] } else { [0xd6u8, 0x33, 0x84] };
 
         ThemeColors {
             bg: hex(bg),
@@ -142,6 +149,14 @@ impl ThemeColors {
             border: hex(mix(bg, toward, 0.16)),
             accent: if is_dark { "#8fa1b3" } else { "#2563eb" }.to_string(),
             fail: if is_dark { "#bf616a" } else { "#c0392b" }.to_string(),
+            // Dot colors. Covered is green; excluded is a bright white/slate;
+            // ignored is a dim grey; excluded-but-covered is pink. The exact
+            // shades adapt to light/dark themes so every dot stays readable.
+            dot_covered: if is_dark { "#99c794" } else { "#2e7d32" }.to_string(),
+            dot_uncovered: if is_dark { "#5c6370" } else { "#b8bcc2" }.to_string(),
+            dot_excluded: if is_dark { "#e8eaed" } else { "#5f6368" }.to_string(),
+            dot_excl_covered: hex(pink),
+            dot_ignored: if is_dark { "#6c7a89" } else { "#9aa0a6" }.to_string(),
             is_dark,
         }
     }
@@ -152,7 +167,9 @@ impl ThemeColors {
         format!(
             ":root{{--bg:{bg};--fg:{fg};--fg-dim:{fg_dim};--bg-elev:{bg_elev};\
 --bg-row:{bg_row};--bg-hover:{bg_hover};--bg-cov:{bg_cov};--bg-pin:{bg_pin};\
---border:{border};--accent:{accent};--fail:{fail};}}",
+--border:{border};--accent:{accent};--fail:{fail};\
+--dot-covered:{dot_covered};--dot-uncovered:{dot_uncovered};--dot-excluded:{dot_excluded};\
+--dot-excl-covered:{dot_excl_covered};--dot-ignored:{dot_ignored};}}",
             bg = self.bg,
             fg = self.fg,
             fg_dim = self.fg_dim,
@@ -164,6 +181,11 @@ impl ThemeColors {
             border = self.border,
             accent = self.accent,
             fail = self.fail,
+            dot_covered = self.dot_covered,
+            dot_uncovered = self.dot_uncovered,
+            dot_excluded = self.dot_excluded,
+            dot_excl_covered = self.dot_excl_covered,
+            dot_ignored = self.dot_ignored,
         )
     }
 }

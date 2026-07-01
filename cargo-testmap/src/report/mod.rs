@@ -1,3 +1,4 @@
+pub mod classify;
 pub mod database;
 pub mod highlight;
 pub mod html;

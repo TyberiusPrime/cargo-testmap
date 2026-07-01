@@ -46,6 +46,11 @@ pub struct SourceFile {
     /// "above threshold" note.
     #[serde(default)]
     pub above_threshold: BTreeMap<String, AboveThreshold>,
+    /// Every executable (instrumented) line in the file, covered or not.
+    /// `#[serde(default)]` so databases written before this field existed
+    /// still load (they'll simply report no coverage gaps).
+    #[serde(default)]
+    pub executable: Vec<u32>,
 }
 
 #[derive(Deserialize, Clone)]

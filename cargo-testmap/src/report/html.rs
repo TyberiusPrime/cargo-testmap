@@ -1,3 +1,4 @@
+use crate::report::classify::{self, LineClass, LineStats};
 use crate::report::database::{AboveThreshold, SourceFile};
 use crate::report::highlight::escape_html as escape;
 use crate::util::fnv1a;
@@ -132,36 +133,80 @@ fn per_test_counts(n_tests: usize, coverage: &BTreeMap<String, SourceFile>) -> V
 }
 
 /// Emit the highlighted source block. `tr_attrs(lineno)` returns the extra
-/// `<tr>` attributes (e.g. `data-line`).
+/// `<tr>` attributes (e.g. `data-line`). `classes[i]` classifies line `i+1`
+/// and drives both the gutter dot's color (via a per-row CSS class) and a
+/// `title` tooltip explaining the dot.
 fn source_block<F: Fn(&str) -> String>(
     highlighted: &[String],
-    src: &SourceFile,
+    classes: &[LineClass],
     tr_attrs: &F,
 ) -> String {
     let mut s = String::new();
     s.push_str("<pre class=\"source\"><code><table>");
     for (i, frag) in highlighted.iter().enumerate() {
         let lineno = (i + 1).to_string();
-        // A line is annotated if it has a below-threshold test list OR is
-        // above threshold.  Above-threshold lines get an extra class so the
-        // dot can be tinted and the JS hover can special-case them.
-        let below = src.lines.contains_key(&lineno);
-        let above = src.above_threshold.contains_key(&lineno);
+        let class = classes.get(i).copied().unwrap_or(LineClass::None);
         s.push_str("<tr");
-        if below {
-            s.push_str(" class=\"cov\"");
-        } else if above {
-            s.push_str(" class=\"cov cov-above\"");
+        if let Some(c) = class.css_class() {
+            s.push_str(&format!(" class=\"{c}\""));
         }
         s.push_str(&tr_attrs(&lineno));
         s.push('>');
-        s.push_str(&format!("<td class=\"ln\">{lineno}</td>"));
+        // Put the explanatory tooltip on the gutter cell so hovering the dot
+        // (rendered via `td.ln::before`) explains the color.
+        let title = class.title();
+        if title.is_empty() {
+            s.push_str(&format!("<td class=\"ln\">{lineno}</td>"));
+        } else {
+            s.push_str(&format!(
+                "<td class=\"ln\" title=\"{}\">{lineno}</td>",
+                escape(title)
+            ));
+        }
         s.push_str("<td class=\"lc\">");
         s.push_str(frag);
         s.push_str("</td></tr>");
     }
     s.push_str("</table></code></pre>");
     s
+}
+
+/// The color legend explaining the gutter dots. Rendered on the index and on
+/// single-file reports.
+fn legend_html() -> &'static str {
+    "<div class=\"legend\">\
+<span><span class=\"dot covered\"></span>covered</span> \
+<span><span class=\"dot uncovered\"></span>uncovered</span> \
+<span><span class=\"dot excluded\"></span>excluded</span> \
+<span><span class=\"dot excl-covered\"></span>excluded but covered</span> \
+<span><span class=\"dot ignored\"></span>ignored</span></div>"
+}
+
+/// Render a coverage summary line for a totals or per-file block.
+/// `uncovered` is `coverable - covered`.
+fn stats_html(s: LineStats) -> String {
+    let uncovered = s.coverable.saturating_sub(s.covered);
+    let pct = match s.pct() {
+        Some(p) => format!("{p}%"),
+        None => "—".to_string(),
+    };
+    let mut out = format!(
+        "<span class=\"covered\">{}</span> / <span class=\"coverable\">{}</span>",
+        s.covered, s.coverable
+    );
+    out.push_str(&format!(" <span class=\"pct\">({pct})</span>"));
+    if uncovered > 0 {
+        out.push_str(&format!(
+            " · <span class=\"gap\">{uncovered} uncovered</span>"
+        ));
+    }
+    if s.excluded > 0 {
+        out.push_str(&format!(" · <span class=\"muted\">{} excluded</span>", s.excluded));
+    }
+    if s.ignored > 0 {
+        out.push_str(&format!(" · <span class=\"muted\">{} ignored</span>", s.ignored));
+    }
+    out
 }
 
 /// Render a multi-file directory report (the default).
@@ -182,8 +227,27 @@ pub fn render_directory(
 
     let (tests_js, _, _) = build_data(tests, coverage);
 
+    // Classify every file once; reuse for both the index totals and the
+    // per-file gutter dots so the work isn't duplicated.
+    let class_map: BTreeMap<String, (Vec<LineClass>, LineStats)> = coverage
+        .iter()
+        .map(|(path, src)| {
+            let classes = classify::classify(src);
+            let stats = classify::stats(&classes);
+            (path.clone(), (classes, stats))
+        })
+        .collect();
+
     // --- index.html ---
     {
+        let mut total = LineStats::default();
+        for (_, s) in class_map.values() {
+            total.coverable += s.coverable;
+            total.covered += s.covered;
+            total.excluded += s.excluded;
+            total.ignored += s.ignored;
+        }
+
         let mut html = String::new();
         html.push_str("<!doctype html><html lang=\"en\"><head>");
         html.push_str("<meta charset=\"utf-8\">");
@@ -199,16 +263,37 @@ pub fn render_directory(
             coverage.len(),
             escape(theme_name)
         ));
+        // Total coverable line count so missing coverage is spottable at a glance.
+        html.push_str(&format!(
+            "<p class=\"total\">total: {}</p>",
+            stats_html(total)
+        ));
+        html.push_str(legend_html());
         html.push_str("<ul class=\"filelist\">");
-        let mut paths: Vec<&String> = coverage.keys().collect();
-        paths.sort();
-        for path in paths {
-            let src = &coverage[path];
-            let n = src.lines.len() + src.above_threshold.len();
+        // Worst-covered files first (most coverable first breaks ties) so files
+        // missing coverage jump out instead of being buried alphabetically.
+        let mut order: Vec<(&String, LineStats)> = class_map
+            .iter()
+            .map(|(p, (_, s))| (p, *s))
+            .collect();
+        order.sort_by(|a, b| {
+            // Ascending coverage %, then most uncovered, then path.
+            let pa = a.1.pct().unwrap_or(0);
+            let pb = b.1.pct().unwrap_or(0);
+            pa.cmp(&pb)
+                .then_with(|| {
+                    let ua = a.1.coverable.saturating_sub(a.1.covered);
+                    let ub = b.1.coverable.saturating_sub(b.1.covered);
+                    ub.cmp(&ua)
+                })
+                .then_with(|| a.0.cmp(b.0))
+        });
+        for (path, s) in order {
             html.push_str(&format!(
-                "<li><a href=\"{}.html\">{name}</a> <span class=\"count\">{n} line(s)</span></li>",
+                "<li><a href=\"{}.html\">{name}</a> <span class=\"stats\">{stats}</span></li>",
                 escape(path),
-                name = escape(path)
+                name = escape(path),
+                stats = stats_html(s)
             ));
         }
         html.push_str("</ul></main></body></html>");
@@ -223,6 +308,7 @@ pub fn render_directory(
 
         let prefix = up_prefix(&view.path);
         let cov = coverage[&view.path].clone();
+        let classes = class_map[&view.path].0.clone();
         let dir_attrs = |ln: &str| format!(" data-line=\"{ln}\"");
 
         let mut html = String::new();
@@ -239,9 +325,13 @@ pub fn render_directory(
         html.push_str("<div class=\"toolbar\">");
         html.push_str(&format!("<a class=\"back\" href=\"{prefix}index.html\">← index</a>"));
         html.push_str(&format!("<span class=\"path\">{}</span>", escape(&view.path)));
+        html.push_str(&format!(
+            "<span class=\"toolbar-stats\">{}</span>",
+            stats_html(class_map[&view.path].1)
+        ));
         html.push_str("</div>");
 
-        html.push_str(&source_block(&view.highlighted, &cov, &dir_attrs));
+        html.push_str(&source_block(&view.highlighted, &classes, &dir_attrs));
 
         html.push_str("<div id=\"panel\" class=\"panel\" role=\"status\">");
         html.push_str("<span class=\"hint\">Hover a highlighted line to see covering tests · click to pin</span>");
@@ -464,20 +554,35 @@ pub fn render_single_file(
         coverage.len(),
         escape(theme_name)
     ));
+    // Total coverable count + legend (same info as the directory index).
+    let mut total = LineStats::default();
+    let mut file_classes: BTreeMap<String, Vec<LineClass>> = BTreeMap::new();
+    for (path, src) in coverage {
+        let classes = classify::classify(src);
+        let s = classify::stats(&classes);
+        total.coverable += s.coverable;
+        total.covered += s.covered;
+        total.excluded += s.excluded;
+        total.ignored += s.ignored;
+        file_classes.insert(path.clone(), classes);
+    }
+    html.push_str(&format!("<p class=\"total\">total: {}</p>", stats_html(total)));
+    html.push_str(legend_html());
     html.push_str("<ul class=\"filelist\">");
     for view in views {
-        let src = &coverage[&view.path];
-        let n = src.lines.len() + src.above_threshold.len();
+        let classes = &file_classes[&view.path];
+        let stats = classify::stats(classes);
         html.push_str(&format!(
-            "<li><a href=\"#file-{id}\">{name}</a> <span class=\"count\">{n} line(s)</span></li>",
+            "<li><a href=\"#file-{id}\">{name}</a> <span class=\"stats\">{stats}</span></li>",
             id = fnv1a(&view.path),
-            name = escape(&view.path)
+            name = escape(&view.path),
+            stats = stats_html(stats)
         ));
     }
     html.push_str("</ul></main>");
 
     for view in views {
-        let cov = &coverage[&view.path];
+        let classes = &file_classes[&view.path];
         let esc_file = escape(&view.path);
         let sf_attrs = move |ln: &str| format!(" data-file=\"{esc_file}\" data-line=\"{ln}\"");
         html.push_str(&format!(
@@ -486,7 +591,7 @@ pub fn render_single_file(
             id = fnv1a(&view.path),
             name = escape(&view.path)
         ));
-        html.push_str(&source_block(&view.highlighted, cov, &sf_attrs));
+        html.push_str(&source_block(&view.highlighted, classes, &sf_attrs));
         html.push_str("</section>");
     }
 

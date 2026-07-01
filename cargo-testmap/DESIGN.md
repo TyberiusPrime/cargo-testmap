@@ -195,7 +195,8 @@ Tests are referenced by index to avoid repeating full test name strings in every
       "lines": {
         "3": [0, 1],
         "5": [0]
-      }
+      },
+      "executable": [3, 4, 5, 8]
     },
     "src/parser.rs": {
       "content": "pub fn parse(input: &str) -> Result<Ast> {\n    // ...\n}\n",
@@ -213,8 +214,15 @@ Tests are referenced by index to avoid repeating full test name strings in every
 - **Each test includes `module`** (the full path from `--list`, e.g. `mycrate::parser::test_foo`) and **`binary`** (the test binary name). This disambiguates identically-named tests from different binaries — the viewer shows both so the user knows which `test_foo` is which.
 - **`sources[file].content` contains the full source text** (snapshotted at collection time). This makes the database fully self-contained: the report generator never reads source files from disk, so later source changes don't invalidate the report. Paths in `sources` keys are relative to `workspace_root`.
 - **`lines` keys are strings** (JSON doesn't support integer keys). Values are arrays of **test indices**.
-- **Only covered lines are stored** — lines with zero tests are implicitly uncovered. Lines with `>= threshold` tests are also excluded at this stage (see §3.3).
-- **No `total_lines` count** — derivable from `content` (line count), no need to duplicate.
+- **`executable`** lists every instrumented line in the file (union of every
+  collected test's LCOV `DA` records), covered or not. This is the denominator
+  for coverage: `lines`/`above_threshold` tell you what was covered; `executable`
+  minus those tells you the gaps, so the report can show a real coverable-line
+  total per file and surface files missing coverage. A file with executable
+  lines but *zero* covered lines is still kept (as a 0%-covered file).
+- **Only covered lines are listed in `lines`** — lines with zero covering tests
+  are derivable from `executable` minus `lines`/`above_threshold`. Lines with
+  `>= threshold` tests are also excluded at this stage (see §3.3).
 - **`metadata`** captures the collection context for reproducibility.
 - **`version` field** for forward-compatible schema evolution.
 

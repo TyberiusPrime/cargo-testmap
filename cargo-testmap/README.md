@@ -32,6 +32,51 @@ collection.
    dark/light theme toggle behind a hamburger menu (top-right); the choice is
    remembered across pages.
 
+## Coverage rules & the index
+
+The report's top-level `index.html` lists a **total coverable line count**
+(`covered / coverable (pct)`), per-file and summed across the whole project, so
+files missing coverage stand out instead of being hidden behind a bare line
+count. Files are ordered worst-coverage-first.
+
+Every executable source line is classified into one category, shown as a
+colored dot in its gutter (hover the dot for an explanation; the index also has
+a legend):
+
+| Dot color | Category      | Meaning                                                       |
+|-----------|---------------|---------------------------------------------------------------|
+| green     | covered       | reached by at least one test                                  |
+| dim       | uncovered     | a real gap — no test reached it                               |
+| white     | excluded      | coverage is *not expected* (see markers / `unreachable!`)     |
+| pink      | excl-covered  | excluded but covered anyway — the marker is probably stale    |
+| grey      | ignored       | panic-shaped noise (`unwrap`/`expect`/`panic!`/…) or markers  |
+
+The classification is computed from the database alone (source text + the
+executable-line set + covered lines), so re-running `report` after tweaking
+the rules needs no re-collection.
+
+### Markers
+
+**Excluded** — coverage is explicitly *not expected* (removed from the
+coverable total; white dot):
+
+- `//cov:excl-start` … `//cov:excl-stop` — exclude the lines in the region.
+- `//cov:excl-line` — exclude just this line.
+- `unreachable!` — any line containing `unreachable!` is auto-excluded.
+
+**Ignored** — panic-shaped noise we don't want muddying the numbers (grey dot;
+not counted as coverable):
+
+- `//cov:ignore-start` … `//cov:ignore-stop` — ignore the lines in the region.
+- `//cov:ignore-line` — ignore just this line.
+- Panic sites: `panic!`, `.unwrap()`, `.expect(`, `todo!`, `unimplemented!`.
+  (`unreachable!` is *excluded*, not ignored.)
+
+Region markers (`-start`/`-stop`) may appear as `//cov:excl-start` or with a
+space (`// cov:excl-start`); the marker lines themselves are never classified
+by the region they open or close. Non-`unwrap()` variants like `unwrap_or` are
+*not* ignored (they don't panic).
+
 ## Requirements
 
 - A Rust toolchain with the `llvm-tools-preview` component (provides
