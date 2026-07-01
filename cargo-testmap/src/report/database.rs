@@ -41,6 +41,17 @@ pub struct TestEntry {
 pub struct SourceFile {
     pub content: String,
     pub lines: BTreeMap<String, Vec<u32>>,
+    /// line -> info for lines covered by >= threshold tests (a sample of the
+    /// covering tests plus the total count).  Shown with a dot and an
+    /// "above threshold" note.
+    #[serde(default)]
+    pub above_threshold: BTreeMap<String, AboveThreshold>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct AboveThreshold {
+    pub total: u32,
+    pub sample: Vec<u32>,
 }
 
 impl Database {

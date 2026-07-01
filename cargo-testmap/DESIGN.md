@@ -38,9 +38,22 @@ The core idea: run `cargo llvm-cov` once per individual test function, capturing
 2. **Enumerate test binaries & their tests.** From step 1's JSON output, extract the list of test binaries (path, name, kind). For **each binary individually**, run `<binary> -- --list --format terse` to get that binary's test names. This gives us the critical test↔binary mapping — a single test name like `test_foo` may exist in multiple binaries, and we must track which binary owns which instance.
 
 3. **Run each test individually.** For each test in each binary:
-   - Set `LLVM_PROFILE_FILE` to a unique per-test profraw path
-   - Run `<binary> --exact <test_name>` directly
-   - **Important:** `LLVM_PROFILE_FILE` must be unique per test, not per binary. Use a deterministic name derived from the test name (not PID — PIDs are not safe with parallelism: two tests from the same binary running concurrently must not collide).
+   - Set `LLVM_PROFILE_FILE` to a per-test **merge-pool** pattern, e.g.
+     `<staging>/<test_hash>-%m.profraw`. The `<test_hash>` prefix isolates this
+     test from its parallel siblings; the `%m` lets every process the test
+     exercises write its own pool file keyed by the *binary's* signature, with
+     the runtime online-merging concurrent runs of the same binary.
+   - Run `<binary> --exact <test_name>` directly.
+   - **Why `%m` and not a plain path:** a test that spawns a process — most
+     commonly the crate's own binary reached via `CARGO_BIN_EXE_*` (a
+     *compile-time* env var that `cargo test --no-run` bakes into the test,
+     pointing at the instrumented binary in the coverage target dir) — would
+     otherwise share one profraw path with the test, and whichever process
+     exits last clobbers the other. The subprocess's coverage would silently
+     vanish. `%m` gives each involved binary its own pool file instead.
+   - The per-test pool is wiped before and after the run: with `%m` the runtime
+     *merges* into an existing pool file, so a leftover from a previous run of
+     the same test would otherwise taint the current one.
 
 4. **Export per-test coverage as LCOV.** For each test's profraw:
    - `llvm-profdata merge -sparse <test>.profraw -o <test>.profdata`
@@ -118,13 +131,21 @@ Step 2: Enumerate tests per binary
 
 Step 3: Run each test individually (with parallelism via --jobs)
   For each test in each binary:
-    $ LLVM_PROFILE_FILE=target/llvm-cov-target/testmap/<binary_name>_<test_name_hash>.profraw \
+    $ LLVM_PROFILE_FILE=<staging>/<test_hash>-%m.profraw \
         <binary> --exact <test_name>
+  # `%m` (merge pool) so a spawned subprocess (e.g. via CARGO_BIN_EXE_*)
+  # writes its own pool file instead of clobbering the test's profile.
 
 Step 4: Export per-test LCOV
-  For each test's profraw:
-    $ llvm-profdata merge -sparse <test>.profraw -o <test>.profdata
-    $ llvm-cov export -format=lcov -instr-profile <test>.profdata <binary> > <test>.lcov
+  For each test, merge ALL of its pool files (<test_hash>-*.profraw — one per
+  binary it exercised, test binary included), then export. Every instrumented
+  binary is passed so subprocess coverage is attributed to source lines:
+    $ llvm-profdata merge -sparse <test_hash>-*.profraw -o <test>.profdata
+    $ llvm-cov export -format=lcov -instr-profile <test>.profdata \
+        <binary> -object <bin1> -object <bin2> > <test>.lcov
+  # Extra binaries MUST use -object; positional extras are ignored as
+  # coverage targets. A binary absent from this test's profile contributes
+  # nothing (llvm-cov still exits 0).
 
 Step 5: Read source files & parse LCOV
   Collect all unique file paths from LCOV SF: records.

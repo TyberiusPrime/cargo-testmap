@@ -82,6 +82,11 @@ pre.source tr.cov td.ln::before {
   color: #99c794;
   margin-right: .4ch;
 }
+/* Above-threshold lines: covered by too many tests to list.  Same dot, but
+   dimmed so they read differently from lines with an enumerable test list. */
+pre.source tr.cov-above td.ln::before {
+  color: #5c6370;
+}
 
 /* Hover & pinned states. */
 pre.source tr.hover { background: var(--bg-hover); }

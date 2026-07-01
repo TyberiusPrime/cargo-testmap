@@ -1,4 +1,4 @@
-use crate::report::database::SourceFile;
+use crate::report::database::{AboveThreshold, SourceFile};
 use crate::report::highlight::escape_html as escape;
 use crate::util::fnv1a;
 use std::collections::BTreeMap;
@@ -28,11 +28,11 @@ fn json_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""))
 }
 
-/// Build `(tests_array_js, coverage_map_js)`.
+/// Build `(tests_array_js, coverage_map_js, above_threshold_map_js)`.
 fn build_data(
     tests: &[TestView<'_>],
     coverage: &BTreeMap<String, SourceFile>,
-) -> (String, String) {
+) -> (String, String, String) {
     let mut tests_js = String::from("[");
     for (i, t) in tests.iter().enumerate() {
         if i > 0 {
@@ -50,16 +50,22 @@ fn build_data(
     tests_js.push(']');
 
     let mut cov_js = String::from('{');
+    let mut above_js = String::from('{');
     for (i, (path, src)) in coverage.iter().enumerate() {
         if i > 0 {
             cov_js.push(',');
+            above_js.push(',');
         }
         cov_js.push_str(&json_str(path));
         cov_js.push(':');
         cov_js.push_str(&lines_obj(&src.lines));
+        above_js.push_str(&json_str(path));
+        above_js.push(':');
+        above_js.push_str(&above_obj(&src.above_threshold));
     }
     cov_js.push('}');
-    (tests_js, cov_js)
+    above_js.push('}');
+    (tests_js, cov_js, above_js)
 }
 
 fn lines_obj(lines: &BTreeMap<String, Vec<u32>>) -> String {
@@ -77,6 +83,28 @@ fn lines_obj(lines: &BTreeMap<String, Vec<u32>>) -> String {
             s.push_str(&x.to_string());
         }
         s.push(']');
+    }
+    s.push('}');
+    s
+}
+
+/// Like [`lines_obj`] but maps line -> `{total, sample}` (for above-threshold
+/// lines, where we keep a small sample of the covering tests, not all).
+fn above_obj(above: &BTreeMap<String, AboveThreshold>) -> String {
+    let mut s = String::from('{');
+    for (j, (line, info)) in above.iter().enumerate() {
+        if j > 0 {
+            s.push(',');
+        }
+        s.push_str(&json_str(line));
+        s.push_str(&format!(":{{total:{},sample:[", info.total));
+        for (k, x) in info.sample.iter().enumerate() {
+            if k > 0 {
+                s.push(',');
+            }
+            s.push_str(&x.to_string());
+        }
+        s.push_str("]}");
     }
     s.push('}');
     s
@@ -107,17 +135,23 @@ fn per_test_counts(n_tests: usize, coverage: &BTreeMap<String, SourceFile>) -> V
 /// `<tr>` attributes (e.g. `data-line`).
 fn source_block<F: Fn(&str) -> String>(
     highlighted: &[String],
-    cov: &BTreeMap<String, Vec<u32>>,
+    src: &SourceFile,
     tr_attrs: &F,
 ) -> String {
     let mut s = String::new();
     s.push_str("<pre class=\"source\"><code><table>");
     for (i, frag) in highlighted.iter().enumerate() {
         let lineno = (i + 1).to_string();
-        let is_cov = cov.contains_key(&lineno);
+        // A line is annotated if it has a below-threshold test list OR is
+        // above threshold.  Above-threshold lines get an extra class so the
+        // dot can be tinted and the JS hover can special-case them.
+        let below = src.lines.contains_key(&lineno);
+        let above = src.above_threshold.contains_key(&lineno);
         s.push_str("<tr");
-        if is_cov {
+        if below {
             s.push_str(" class=\"cov\"");
+        } else if above {
+            s.push_str(" class=\"cov cov-above\"");
         }
         s.push_str(&tr_attrs(&lineno));
         s.push('>');
@@ -146,7 +180,7 @@ pub fn render_directory(
     fs::write(out_dir.join("css").join("style.css"), CSS)?;
     fs::write(out_dir.join("js").join("app.js"), JS)?;
 
-    let (tests_js, _) = build_data(tests, coverage);
+    let (tests_js, _, _) = build_data(tests, coverage);
 
     // --- index.html ---
     {
@@ -169,7 +203,8 @@ pub fn render_directory(
         let mut paths: Vec<&String> = coverage.keys().collect();
         paths.sort();
         for path in paths {
-            let n = coverage[path].lines.len();
+            let src = &coverage[path];
+            let n = src.lines.len() + src.above_threshold.len();
             html.push_str(&format!(
                 "<li><a href=\"{}.html\">{name}</a> <span class=\"count\">{n} line(s)</span></li>",
                 escape(path),
@@ -206,7 +241,7 @@ pub fn render_directory(
         html.push_str(&format!("<span class=\"path\">{}</span>", escape(&view.path)));
         html.push_str("</div>");
 
-        html.push_str(&source_block(&view.highlighted, &cov.lines, &dir_attrs));
+        html.push_str(&source_block(&view.highlighted, &cov, &dir_attrs));
 
         html.push_str("<div id=\"panel\" class=\"panel\" role=\"status\">");
         html.push_str("<span class=\"hint\">Hover a highlighted line to see covering tests · click to pin</span>");
@@ -221,6 +256,10 @@ pub fn render_directory(
         html.push_str(&json_str(&view.path));
         html.push(':');
         html.push_str(&lines_obj(&cov.lines));
+        html.push_str("};window.__TESTMAP_ABOVE={");
+        html.push_str(&json_str(&view.path));
+        html.push(':');
+        html.push_str(&above_obj(&cov.above_threshold));
         html.push_str("};</script>");
         html.push_str(&format!("<script src=\"{prefix}js/app.js\"></script>"));
         html.push_str("</body></html>");
@@ -407,7 +446,7 @@ pub fn render_single_file(
 ) -> std::io::Result<()> {
     use std::fs;
 
-    let (tests_js, cov_js) = build_data(tests, coverage);
+    let (tests_js, cov_js, above_js) = build_data(tests, coverage);
 
     let mut html = String::new();
     html.push_str("<!doctype html><html lang=\"en\"><head>");
@@ -427,7 +466,8 @@ pub fn render_single_file(
     ));
     html.push_str("<ul class=\"filelist\">");
     for view in views {
-        let n = coverage[&view.path].lines.len();
+        let src = &coverage[&view.path];
+        let n = src.lines.len() + src.above_threshold.len();
         html.push_str(&format!(
             "<li><a href=\"#file-{id}\">{name}</a> <span class=\"count\">{n} line(s)</span></li>",
             id = fnv1a(&view.path),
@@ -446,7 +486,7 @@ pub fn render_single_file(
             id = fnv1a(&view.path),
             name = escape(&view.path)
         ));
-        html.push_str(&source_block(&view.highlighted, &cov.lines, &sf_attrs));
+        html.push_str(&source_block(&view.highlighted, cov, &sf_attrs));
         html.push_str("</section>");
     }
 
@@ -458,6 +498,8 @@ pub fn render_single_file(
     html.push_str(&tests_js);
     html.push_str(";window.__TESTMAP_COV=");
     html.push_str(&cov_js);
+    html.push_str(";window.__TESTMAP_ABOVE=");
+    html.push_str(&above_js);
     html.push_str(";</script><script>");
     html.push_str(JS);
     html.push_str("</script></body></html>");

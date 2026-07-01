@@ -32,19 +32,23 @@ pub struct TestCase {
 }
 
 /// Build all test binaries once with instrumentation, in an isolated target
-/// directory `cov_target_dir`. Returns the discovered test binaries.
+/// directory `cov_target_dir`. Returns the discovered test binaries together
+/// with *every* executable the build produced (test harnesses, regular bin
+/// targets, …).  The full executable list is needed later so that `llvm-cov
+/// export` can map source coverage belonging to binaries a test *spawns*
+/// (via `CARGO_BIN_EXE_*`), which are not test harnesses themselves.
 pub fn build_targets(
     dir: &Path,
     cargo_args: &[String],
     cov_target_dir: &str,
     verbose: bool,
-) -> Result<Vec<TestTarget>> {
+) -> Result<(Vec<TestTarget>, Vec<PathBuf>)> {
     let cov_env = coverage_env(dir, Some(cov_target_dir))?;
-    let targets = build_and_collect(dir, cargo_args, &cov_env, cov_target_dir, verbose)?;
+    let (targets, objects) = build_and_collect(dir, cargo_args, &cov_env, cov_target_dir, verbose)?;
     if targets.is_empty() {
         anyhow::bail!("no test binaries were produced; is there a `#[test]` in the project?");
     }
-    Ok(targets)
+    Ok((targets, objects))
 }
 
 #[derive(Deserialize)]
@@ -75,7 +79,7 @@ fn build_and_collect(
     cov_env: &BTreeMap<String, String>,
     cov_target_dir: &str,
     verbose: bool,
-) -> Result<Vec<TestTarget>> {
+) -> Result<(Vec<TestTarget>, Vec<PathBuf>)> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(dir);
     cmd.args(["test", "--no-run", "--message-format", "json"]);
@@ -98,9 +102,12 @@ fn build_and_collect(
         std::io::Write::write_all(&mut std::io::stderr(), &output.stderr).ok();
     }
 
-    // The last `kind` element is the most specific (e.g. ["lib"] vs the
-    // integration-style target name).
+    // `targets` = test-harness binaries we enumerate and run per-test.
+    // `objects` = *every* executable produced, kept so `llvm-cov export` can
+    // map coverage from binaries a test spawns (via `CARGO_BIN_EXE_*`), which
+    // are the regular bin artifacts (profile.test == false), not the harness.
     let mut targets = Vec::new();
+    let mut objects = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in output.stdout.split(|b| *b == b'\n') {
         if line.is_empty() {
@@ -113,6 +120,13 @@ fn build_and_collect(
             continue;
         }
         let Some(target) = art.target else { continue };
+        let Some(exe) = art.executable else { continue };
+        if !seen.insert(exe.clone()) {
+            continue;
+        }
+        let executable = PathBuf::from(&exe);
+        // Every executable becomes an `-object` for coverage export.
+        objects.push(executable.clone());
         let is_test = art
             .profile
             .as_ref()
@@ -121,12 +135,7 @@ fn build_and_collect(
         if !is_test {
             continue;
         }
-        let Some(exe) = art.executable else { continue };
-        if !seen.insert(exe.clone()) {
-            continue;
-        }
         let kind = target.kind.last().cloned().unwrap_or_default();
-        let executable = PathBuf::from(&exe);
         // Package directory = parent of Cargo.toml. Falls back to the
         // invocation dir only if cargo omitted the field (it never does in
         // practice), so we still run rather than fail.
@@ -144,7 +153,7 @@ fn build_and_collect(
         });
     }
 
-    Ok(targets)
+    Ok((targets, objects))
 }
 
 /// Enumerate the tests within a single binary via `--list --format terse`.

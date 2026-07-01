@@ -94,7 +94,7 @@ pub fn run(args: CollectArgs) -> Result<()> {
     }
     cargo_select.extend(args.cargo_args.iter().cloned());
     eprintln!("→ building instrumented test binaries…");
-    let built_targets = test_discovery::build_targets(
+    let (built_targets, objects) = test_discovery::build_targets(
         &dir,
         &cargo_select,
         &cov_target_dir_str,
@@ -164,10 +164,14 @@ pub fn run(args: CollectArgs) -> Result<()> {
     let mut indexed: Vec<(TestCase, TestTarget)> = selected.into_iter().collect();
     indexed.sort_by(|a, b| a.0.full.cmp(&b.0.full).then(a.0.target_index.cmp(&b.0.target_index)));
 
+    // Every instrumented executable the build produced.  A test may spawn
+    // other binaries (via `CARGO_BIN_EXE_*`); to map their source coverage we
+    // must hand all of these to `llvm-cov export` (see `export_lcov`).
     let ctx = coverage_run::RunContext {
         tools: &tools,
         staging: &staging,
         workspace_root: &workspace_root,
+        objects: &objects,
     };
 
     let results: Vec<Option<(usize, TestCoverage)>> = indexed

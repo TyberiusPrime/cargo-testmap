@@ -38,6 +38,11 @@ pub struct RunContext<'a> {
     pub tools: &'a LlvmTools,
     pub staging: &'a Path,
     pub workspace_root: &'a Path,
+    /// Every instrumented binary produced by the build.  A test may spawn other
+    /// binaries (via `CARGO_BIN_EXE_*`); their coverage lands in the same
+    /// profdata but belongs to *different* object files, so `llvm-cov export`
+    /// must be told about all of them (via `-object`) to map their source.
+    pub objects: &'a [PathBuf],
 }
 
 /// Run a single test by exact name with a unique profraw, then export LCOV.
@@ -54,16 +59,26 @@ pub fn run_single(
     ctx: &RunContext<'_>,
 ) -> Result<TestCoverage> {
     let hash = fnv1a(&format!("{target_name}::{full_test_path}"));
-    let profraw = ctx.staging.join(format!("{hash}.profraw"));
     let profdata = ctx.staging.join(format!("{hash}.profdata"));
 
+    // Drop any profraw left over from a previous collection of this same test
+    // so we only ever attribute this run's data.
+    clean_run_profraw(ctx.staging, &hash);
+
     let start = Instant::now();
+    // `%p` (PID) is essential here.  Tests that spawn other binaries — e.g. via
+    // `CARGO_BIN_EXE_<name>` — cause those children to *inherit*
+    // LLVM_PROFILE_FILE.  With a fixed filename the parent and child write the
+    // same `.profraw` and clobber each other, so coverage that lives only in
+    // the spawned binary silently vanishes.  With `%p` each process writes its
+    // own `<hash>.<pid>.profraw`; all of them are merged below so the spawned
+    // binary's coverage is attributed to this test.
+    let profraw_pattern = ctx.staging.join(format!("{hash}.%p.profraw"));
     let output = Command::new(target_exe)
         .current_dir(cwd)
         .arg("--exact")
         .arg(full_test_path)
-        // A unique, deterministic profile file — no PID, safe under parallelism.
-        .env("LLVM_PROFILE_FILE", &profraw)
+        .env("LLVM_PROFILE_FILE", &profraw_pattern)
         .output();
     let ok = matches!(&output, Ok(o) if o.status.success());
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -81,18 +96,17 @@ pub fn run_single(
         })
     };
 
+    // Collect every profraw this run wrote: the test process itself plus any
+    // spawned children (each substitutes its own PID for `%p`).
+    let profraws = collect_run_profraw(ctx.staging, &hash);
+    if profraws.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no coverage from `{}` (binary not instrumented?)",
+            full_test_path
+        ));
+    }
     // Export LCOV even if the test failed — partial coverage is still useful.
-    // If the profraw is missing, the binary wasn't instrumented for this run;
-    // surface that instead of silently recording empty coverage.
-    let lcov = match export_lcov(ctx.tools, &profraw, &profdata, target_exe) {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(e.context(format!(
-                "no coverage from `{}` (binary not instrumented?)",
-                full_test_path
-            )));
-        }
-    };
+    let lcov = export_lcov(ctx.tools, &profraws, &profdata, target_exe, ctx.objects)?;
     let records = relativize_records(parse_covered(&lcov), ctx.workspace_root);
 
     Ok(TestCoverage {
@@ -130,24 +144,26 @@ fn combine_test_output(stderr: &[u8], stdout: &[u8]) -> String {
 ///
 /// `test_path` should be a real test name within `target_exe`.
 pub fn check_instrumented(target_exe: &Path, test_path: &str, cwd: &Path) -> Result<()> {
-    let sink = std::env::temp_dir().join(format!(
-        "testmap-smoke-{}-{}.profraw",
+    // A dedicated temp dir + `%p`: the probe test may itself spawn children
+    // (via `CARGO_BIN_EXE_*`), and we want each to write its own profraw
+    // rather than clobbering one shared file.
+    let sink_dir = std::env::temp_dir().join(format!(
+        "testmap-smoke-{}-{}",
         std::process::id(),
         fnv1a(test_path),
     ));
-    let _ = std::fs::remove_file(&sink);
+    let _ = std::fs::remove_dir_all(&sink_dir);
+    let sink_pattern = sink_dir.join("smoke.%p.profraw");
     let ran = Command::new(target_exe)
         .current_dir(cwd)
         .arg("--exact")
         .arg(test_path)
-        .env("LLVM_PROFILE_FILE", &sink)
+        .env("LLVM_PROFILE_FILE", &sink_pattern)
         .output();
-    // The test may pass or fail; we only care whether it wrote a profraw.
-    let ok = match &ran {
-        Ok(_) => sink.exists() && std::fs::metadata(&sink).map(|m| m.len() > 0).unwrap_or(false),
-        Err(_) => false,
-    };
-    let _ = std::fs::remove_file(&sink);
+    // The test may pass or fail; we only care whether it (or a child) wrote a
+    // non-empty profraw somewhere under the sink dir.
+    let ok = matches!(&ran, Ok(_) if has_nonempty_profraw(&sink_dir));
+    let _ = std::fs::remove_dir_all(&sink_dir);
     if !ok {
         bail!(
             "test binaries are not coverage-instrumented: running `{}` did not \
@@ -165,32 +181,42 @@ pub fn check_instrumented(target_exe: &Path, test_path: &str, cwd: &Path) -> Res
 
 fn export_lcov(
     tools: &LlvmTools,
-    profraw: &Path,
+    profraws: &[PathBuf],
     profdata: &Path,
     target_exe: &Path,
+    objects: &[PathBuf],
 ) -> Result<String> {
-    // Merge the single profraw.
-    let merge = Command::new(&tools.profdata)
-        .arg("merge")
-        .arg("-sparse")
-        .arg(profraw)
-        .arg("-o")
-        .arg(profdata)
-        .output()?;
+    // Merge *all* profraw files for this run — the test process plus any
+    // spawned children — into one profdata.
+    let mut merge = Command::new(&tools.profdata);
+    merge.arg("merge").arg("-sparse").arg("-o").arg(profdata);
+    for p in profraws {
+        merge.arg(p);
+    }
+    let merge = merge.output()?;
     if !merge.status.success() {
         anyhow::bail!(
             "llvm-profdata merge failed: {}",
             String::from_utf8_lossy(&merge.stderr)
         );
     }
-    // Export as LCOV.
-    let export = Command::new(&tools.cov)
+    // Export as LCOV.  The primary object is the test binary; every other
+    // built binary is passed via `-object` so source files that live in
+    // *spawned* binaries (via `CARGO_BIN_EXE_*`) get mapped too.  A binary
+    // with no matching records in the profdata is simply ignored by llvm-cov.
+    let mut export = Command::new(&tools.cov);
+    export
         .arg("export")
         .arg("-format=lcov")
         .arg("-instr-profile")
         .arg(profdata)
-        .arg(target_exe)
-        .output()?;
+        .arg(target_exe);
+    for obj in objects {
+        if obj != target_exe {
+            export.arg("-object").arg(obj);
+        }
+    }
+    let export = export.output()?;
     if !export.status.success() {
         anyhow::bail!(
             "llvm-cov export failed: {}",
@@ -214,5 +240,48 @@ fn relativize_records(
         out.push((rel.to_string_lossy().into_owned(), lines));
     }
     out
+}
+
+/// Remove every `<hash>.*.profraw` in `staging` left over from a previous
+/// collection of this same test.  Keeps each run's data self-contained.
+fn clean_run_profraw(staging: &Path, hash: &str) {
+    for p in glob_run_profraw(staging, hash) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Collect every `<hash>.*.profraw` in `staging` written during this run —
+/// the test process itself plus any spawned children (each substitutes its
+/// PID for `%p`).
+fn collect_run_profraw(staging: &Path, hash: &str) -> Vec<PathBuf> {
+    glob_run_profraw(staging, hash)
+}
+
+fn glob_run_profraw(staging: &Path, hash: &str) -> Vec<PathBuf> {
+    let prefix = format!("{hash}.");
+    staging
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            name.to_string_lossy().starts_with(&prefix)
+                && name.to_string_lossy().ends_with(".profraw")
+        })
+        .map(|e| e.path())
+        .collect()
+}
+
+/// True if `dir` contains any non-empty `.profraw`.
+fn has_nonempty_profraw(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .any(|e| {
+            e.file_name().to_string_lossy().ends_with(".profraw")
+                && std::fs::metadata(e.path()).map(|m| m.len() > 0).unwrap_or(false)
+        })
 }
 

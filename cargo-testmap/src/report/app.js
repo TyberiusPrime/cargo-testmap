@@ -3,6 +3,7 @@
 // Page globals (set by the generated HTML):
 //   window.__TESTMAP_TESTS  : array of {n,m,b,k,s}
 //   window.__TESTMAP_COV    : { [filePath]: { "line": [testIdx, ...] } }
+//   window.__TESTMAP_ABOVE  : { [filePath]: { "line": count } }  (>= threshold)
 //   window.__TESTMAP_FILE   : the current file path (directory mode only)
 //
 // Each covered <tr> has a `data-line` (and `data-file` in single-file mode).
@@ -12,6 +13,7 @@
 
   var TESTS = window.__TESTMAP_TESTS || [];
   var COV = window.__TESTMAP_COV || {};
+  var ABOVE = window.__TESTMAP_ABOVE || {};
   var CURRENT = window.__TESTMAP_FILE || null;
 
   var panel = document.getElementById("panel");
@@ -27,6 +29,16 @@
     var lines = COV[file];
     if (!lines) return null;
     return lines[line] || null;
+  }
+
+  // For above-threshold lines we keep a small sample of the covering tests
+  // plus the total count (the report shows the sample + an "above threshold" note).
+  function aboveInfo(tr) {
+    var file = rowFile(tr);
+    var line = tr.dataset.line;
+    var lines = ABOVE[file];
+    if (!lines) return null;
+    return lines[line] || null; // {total, sample:[idx,...]}
   }
 
   function badgeFor(t) {
@@ -49,35 +61,67 @@
     var idxs = covering(tr);
     var hint =
       "click to " + (pinned_ ? "unpin" : "pin");
-    if (!idxs || idxs.length === 0) {
+    if (idxs && idxs.length > 0) {
+      var items = idxs
+        .map(function (i) {
+          var t = TESTS[i];
+          if (!t) return "";
+          return (
+            '<li class="' + (t.s === "failed" ? "failed" : "") + '">' +
+            badgeFor(t) +
+            nameFor(t) +
+            "</li>"
+          );
+        })
+        .join("");
       panel.innerHTML =
-        '<span class="hint">No mapped tests for line ' +
+        '<div class="panel-head">Tests covering line ' +
         esc(tr.dataset.line) +
-        ".</span>";
+        " (" +
+        idxs.length +
+        ") · " +
+        hint +
+        "</div><ul>" +
+        items +
+        "</ul>";
       return;
     }
-    var items = idxs
-      .map(function (i) {
-        var t = TESTS[i];
-        if (!t) return "";
-        return (
-          '<li class="' + (t.s === "failed" ? "failed" : "") + '">' +
-          badgeFor(t) +
-          nameFor(t) +
-          "</li>"
-        );
-      })
-      .join("");
+    var info = aboveInfo(tr);
+    if (info) {
+      var sample = info.sample || [];
+      var items = sample
+        .map(function (i) {
+          var t = TESTS[i];
+          if (!t) return "";
+          return (
+            '<li class="' + (t.s === "failed" ? "failed" : "") + '">' +
+            badgeFor(t) +
+            nameFor(t) +
+            "</li>"
+          );
+        })
+        .join("");
+      var shown = sample.length;
+      var total = info.total;
+      panel.innerHTML =
+        '<div class="panel-head">Line ' +
+        esc(tr.dataset.line) +
+        " · above threshold — showing " +
+        shown +
+        " of " +
+        total +
+        " test" + (total === 1 ? "" : "s") +
+        " · " +
+        hint +
+        "</div>" +
+        (items ? "<ul>" + items + "</ul>" : "") +
+        '<span class="hint">Covered by too many tests to list fully. Raise --threshold to enumerate them.</span>';
+      return;
+    }
     panel.innerHTML =
-      '<div class="panel-head">Tests covering line ' +
+      '<span class="hint">No mapped tests for line ' +
       esc(tr.dataset.line) +
-      " (" +
-      idxs.length +
-      ") · " +
-      hint +
-      "</div><ul>" +
-      items +
-      "</ul>";
+      ".</span>";
   }
 
   function clearPanel() {
@@ -93,7 +137,7 @@
   // Wire up only the rows that actually have coverage data.
   var rows = document.querySelectorAll("tr[data-line]");
   rows.forEach(function (tr) {
-    if (!covering(tr)) return; // not an annotated line
+    if (!covering(tr) && !aboveInfo(tr)) return; // not an annotated line
     tr.addEventListener("mouseenter", function () {
       setHover(tr, true);
       if (!pinned) showPanel(tr, false);
