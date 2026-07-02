@@ -9,8 +9,14 @@ renders it as a browsable, syntax-highlighted HTML report.
 
 See [`DESIGN.md`](./DESIGN.md) for the full design document.
 
-## How it works
 
+# Screenshots
+
+![Screenshot showing overview](showcase/index.png)
+
+![Screenshot showing example file](showcase/file.png)
+
+## How it works
 
 **`cargo testmap run`** - builds & runs every test under coverage, individually,
 collects the data into $CARGO_TARGET_DIR/testmap and builds the report.
@@ -75,9 +81,15 @@ not counted as coverable):
   (`unreachable!` is *excluded*, not ignored.)
 
 Region markers (`-start`/`-stop`) may appear as `//cov:excl-start` or with a
-space (`// cov:excl-start`); the marker lines themselves are never classified
-by the region they open or close. Non-`unwrap()` variants like `unwrap_or` are
-*not* ignored (they don't panic).
+space (`// cov:excl-start`). A line carrying any cov marker is itself
+classified by that marker (an `excl-*` line is excluded, an `ignore-*` line is
+ignored) — so a marker comment that llvm-cov spuriously instruments (a nearby
+`format!(` macro bleeding a counter onto it) won't show up red. Trailing
+commentary after a marker is fine (`//cov:excl-start reason…`) — a line carries
+at most one marker role (whichever marker appears first), so commentary that
+merely *mentions* another marker (e.g. `//cov:excl-start … closed by
+cov:excl-stop`) won't be mistaken for it. Non-`unwrap()` variants like
+`unwrap_or` are *not* ignored (they don't panic).
 
 ## Requirements
 
@@ -89,6 +101,9 @@ by the region they open or close. Non-`unwrap()` variants like `unwrap_or` are
 ## Usage
 
 ```sh
+cargo testmap run                             # → target/testmap/testmap.json & target/testmap/report/index.html
+
+# or in two steps
 # from inside a crate that has tests:
 cargo testmap collect --lib --tests           # → target/testmap/testmap.json
 cargo testmap report                          # → target/testmap/report/index.html
@@ -101,6 +116,18 @@ cargo testmap report --single-file coverage.html   # one self-contained file
 
 A trivial example target lives in [`../example`](../example) — see its
 [`README`](../example/README.md).
+
+
+# Notes on the HTML
+
+Dot color code:
+ * green - covered
+ * red - not covered
+ * grey - ignored 
+ * purple - excluded, but 
+ * no dot - irrelevant.
+
+Once you've clicked on 'uncovered/excluded/ignored', you can press space to jump to the next one!
 
 ## Project layout
 
