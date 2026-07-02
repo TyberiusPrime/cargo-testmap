@@ -150,3 +150,9 @@ src/
     ├── style.css          report theme
     └── app.js             hover/click interactivity
 ```
+
+
+## Changelog
+
+### 0.1.1
+- Respect CARGO_TARGET_DIR
