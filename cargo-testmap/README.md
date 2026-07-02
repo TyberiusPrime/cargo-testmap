@@ -12,9 +12,9 @@ See [`DESIGN.md`](./DESIGN.md) for the full design document.
 
 # Screenshots
 
-![Screenshot showing overview](showcase/index.png)
+![Screenshot showing overview](https://raw.githubusercontent.com/TyberiusPrime/cargo-testmap/main/cargo-testmap/showcase/index.png)
 
-![Screenshot showing example file](showcase/file.png)
+![Screenshot showing example file](https://raw.githubusercontent.com/TyberiusPrime/cargo-testmap/main/cargo-testmap/showcase/file.png)
 
 ## How it works
 
