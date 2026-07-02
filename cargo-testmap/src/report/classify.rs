@@ -193,9 +193,10 @@ pub fn stats(classes: &[LineClass]) -> LineStats {
 ///
 /// Returns `(excluded, ignored)` as per-line (0-indexed) flags. The flags are
 /// computed for *every* line (executable or not); callers only consult them
-/// for executable lines. Marker lines themselves are never flagged by their
-/// own range toggle (they're comments, hence non-executable, but this keeps
-/// the semantics clean and predictable).
+/// for executable lines. A line carrying a cov marker is flagged by its marker
+/// family (`excl-*` → excluded, `ignore-*` → ignored), so a marker comment that
+/// llvm-cov spuriously instruments still reads as excluded/ignored rather than
+/// as an uncovered gap.
 fn compute_excl_ignored(content: &str) -> (Vec<bool>, Vec<bool>) {
     let lines: Vec<&str> = content.lines().collect();
     let n = lines.len();
@@ -205,32 +206,29 @@ fn compute_excl_ignored(content: &str) -> (Vec<bool>, Vec<bool>) {
     let mut ign_on = false;
 
     for (i, raw) in lines.iter().enumerate() {
-        let has_excl_start = raw.contains("cov:excl-start");
-        let has_excl_stop = raw.contains("cov:excl-stop");
-        let has_excl_line = raw.contains("cov:excl-line");
-        let has_ign_start = raw.contains("cov:ignore-start");
-        let has_ign_stop = raw.contains("cov:ignore-stop");
-        let has_ign_line = raw.contains("cov:ignore-line");
+        let marker = line_marker(raw);
 
-        // A line carrying a range toggle is itself just a marker: it is not
-        // classified by the region it opens/closes.
-        let is_range_marker =
-            has_excl_start || has_excl_stop || has_ign_start || has_ign_stop;
-
-        if !is_range_marker {
-            if excl_on {
+        // A line carrying a cov marker is itself a coverage-control comment,
+        // not code — so even when llvm-cov spuriously instruments it (e.g. a
+        // `//cov:excl-start` that a neighbouring `format!` macro bleeds a
+        // counter onto), it must not read as an uncovered gap. Classify it by
+        // its marker family. Every other line takes the surrounding region's
+        // state.
+        match marker {
+            Some(Marker::ExclStart | Marker::ExclStop | Marker::ExclLine) => {
                 excluded[i] = true;
             }
-            if ign_on {
+            Some(Marker::IgnStart | Marker::IgnStop | Marker::IgnLine) => {
                 ignored[i] = true;
             }
-        }
-        // Single-line markers apply to the line they sit on.
-        if has_excl_line {
-            excluded[i] = true;
-        }
-        if has_ign_line {
-            ignored[i] = true;
+            None => {
+                if excl_on {
+                    excluded[i] = true;
+                }
+                if ign_on {
+                    ignored[i] = true;
+                }
+            }
         }
         // Automatic classifications (only meaningful on executable lines).
         if raw.contains("unreachable!") {
@@ -240,21 +238,55 @@ fn compute_excl_ignored(content: &str) -> (Vec<bool>, Vec<bool>) {
             ignored[i] = true;
         }
 
-        // Advance region state for subsequent lines.
-        if has_excl_start {
-            excl_on = true;
-        }
-        if has_excl_stop {
-            excl_on = false;
-        }
-        if has_ign_start {
-            ign_on = true;
-        }
-        if has_ign_stop {
-            ign_on = false;
+        // Advance region state for subsequent lines. A line carries at most
+        // one toggle (see [`line_marker`]), so it can never both open and
+        // close a region — which previously let trailing commentary that merely
+        // *mentioned* the opposite marker (e.g. `//cov:excl-start … cov:excl-stop`)
+        // collapse a region on a single line.
+        match marker {
+            Some(Marker::ExclStart) => excl_on = true,
+            Some(Marker::ExclStop) => excl_on = false,
+            Some(Marker::IgnStart) => ign_on = true,
+            Some(Marker::IgnStop) => ign_on = false,
+            _ => {}
         }
     }
     (excluded, ignored)
+}
+
+/// The one coverage marker a line carries, if any.
+///
+/// The six markers (`cov:excl-{start,stop,line}`, `cov:ignore-{start,stop,line}`)
+/// are matched by plain substring, but a line is assigned **at most one**
+/// role: whichever marker token appears *earliest* on the line. This makes the
+/// detection robust to commentary that happens to mention another marker —
+/// e.g. `//cov:excl-start until cov:excl-stop below` is an *excl-start*, not a
+/// line that both opens and immediately closes the region. The token the user
+/// actually typed sits at the start of the comment, so earliest-wins reliably
+/// picks it over any later mention.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Marker {
+    ExclStart,
+    ExclStop,
+    ExclLine,
+    IgnStart,
+    IgnStop,
+    IgnLine,
+}
+
+fn line_marker(line: &str) -> Option<Marker> {
+    [
+        ("cov:excl-start", Marker::ExclStart),
+        ("cov:excl-stop", Marker::ExclStop),
+        ("cov:excl-line", Marker::ExclLine),
+        ("cov:ignore-start", Marker::IgnStart),
+        ("cov:ignore-stop", Marker::IgnStop),
+        ("cov:ignore-line", Marker::IgnLine),
+    ]
+    .into_iter()
+    .filter_map(|(tok, m)| line.find(tok).map(|pos| (pos, m)))
+    .min_by_key(|(pos, _)| *pos)
+    .map(|(_, m)| m)
 }
 
 /// Recognise a panic-shaped line. `unreachable!` is deliberately *not*
@@ -380,18 +412,114 @@ mod tests {
     }
 
     #[test]
+    fn excl_start_commentary_does_not_collapse_region() {
+        // Regression: a `//cov:excl-start` line whose trailing commentary
+        // mentions the stop marker must NOT also close the region. Previously
+        // the substring match treated the line as both start and stop, opening
+        // and immediately closing the region — so the body stayed uncovered and
+        // the real `-stop` became a no-op.
+        let src = file(
+            "let a = 1;\n\
+             //cov:excl-start until cov:excl-stop below\n\
+             let b = 2;\n\
+             //cov:excl-stop\n\
+             let d = 4;\n",
+        );
+        let c = classes(&src);
+        assert_eq!(c[0], LineClass::Uncovered);
+        assert_eq!(c[2], LineClass::Excluded); // inside the region
+        assert_eq!(c[4], LineClass::Uncovered);
+    }
+
+    #[test]
+    fn excl_stop_commentary_does_not_reopen_region() {
+        // Symmetric to the above: a `//cov:excl-stop` line mentioning the start
+        // marker must not re-open the region after closing it.
+        let src = file(
+            "//cov:excl-start\n\
+             let b = 2;\n\
+             //cov:excl-stop pairs with cov:excl-start\n\
+             let d = 4;\n",
+        );
+        let c = classes(&src);
+        assert_eq!(c[1], LineClass::Excluded);
+        assert_eq!(c[3], LineClass::Uncovered);
+    }
+
+    #[test]
+    fn excl_line_commentary_mentioning_start_is_still_a_line_marker() {
+        // An excl-line whose commentary mentions excl-start should stay a
+        // single-line marker, not open a region.
+        let src = file(
+            "let a = 1; //cov:excl-line (not an excl-start)\n\
+             let b = 2;\n",
+        );
+        let c = classes(&src);
+        assert_eq!(c[0], LineClass::Excluded);
+        assert_eq!(c[1], LineClass::Uncovered);
+    }
+
+    #[test]
+    fn excl_start_with_plain_commentary_still_works() {
+        // Harmless trailing commentary (no other marker word) was never broken —
+        // guard it against future regressions.
+        let src = file(
+            "//cov:excl-start reason here\n\
+             let b = 2;\n\
+             //cov:excl-stop\n",
+        );
+        assert_eq!(classes(&src)[1], LineClass::Excluded);
+    }
+
+    #[test]
     fn excl_start_stop_region_excludes_inside() {
         let src = file(
             "let a = 1;\n//cov:excl-start\nlet b = 2;\nlet c = 3;\n//cov:excl-stop\nlet d = 4;\n",
         );
         let c = classes(&src);
-        // line 1: uncovered; line 2: marker (excluded flag, but not executable
-        // in reality — here it's executable so it shows Excluded); lines 3-4:
-        // excluded; line 5: marker Excluded; line 6: uncovered.
+        // line 1: uncovered; line 2: excl-start marker → Excluded (a marker
+        // line is itself a coverage-control comment, so even when llvm-cov
+        // spuriously instruments it it must not read as a gap); lines 3-4:
+        // excluded; line 5: excl-stop marker → Excluded; line 6: uncovered.
         assert_eq!(c[0], LineClass::Uncovered);
+        assert_eq!(c[1], LineClass::Excluded); // //cov:excl-start
         assert_eq!(c[2], LineClass::Excluded);
         assert_eq!(c[3], LineClass::Excluded);
+        assert_eq!(c[4], LineClass::Excluded); // //cov:excl-stop
         assert_eq!(c[5], LineClass::Uncovered);
+    }
+
+    #[test]
+    fn executable_marker_line_is_not_a_gap() {
+        // Regression (real-world): llvm-cov sometimes marks a `//cov:excl-start`
+        // / `//cov:excl-stop` *comment* line as executable — typically a nearby
+        // `format!(` macro bleeds a counter onto it. Such a marker line must
+        // still be classified Excluded/Ignored, never Uncovered, otherwise the
+        // very line that opts out of coverage shows up red. Here every line is
+        // executable (the `file()` helper), emulating that spill.
+        let src = file(
+            "//cov:excl-start\n\
+             errors.push(format!(\n\
+             \"boom\"\n\
+             ));\n\
+             //cov:excl-stop\n",
+        );
+        let c = classes(&src);
+        assert_eq!(c[0], LineClass::Excluded); // excl-start marker
+        assert_eq!(c[1], LineClass::Excluded); // errors.push(format!(
+        assert_eq!(c[2], LineClass::Excluded); // "boom"
+        assert_eq!(c[3], LineClass::Excluded); // ));
+        assert_eq!(c[4], LineClass::Excluded); // excl-stop marker
+    }
+
+    #[test]
+    fn executable_ignore_marker_line_is_ignored() {
+        // Same spill, but for ignore markers → Ignored (grey), not a gap.
+        let src = file("//cov:ignore-start\nlet b = 2;\n//cov:ignore-stop\n");
+        let c = classes(&src);
+        assert_eq!(c[0], LineClass::Ignored);
+        assert_eq!(c[1], LineClass::Ignored);
+        assert_eq!(c[2], LineClass::Ignored);
     }
 
     #[test]
