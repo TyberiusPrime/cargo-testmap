@@ -36,10 +36,15 @@ fn try_main(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
 
     match cli.command {
         cli::Command::Collect(c) => {
+            let mut c = c;
+            c.output = cli::resolve_default_path(&c.output);
             collect::run(c)?;
             Ok(ExitCode::SUCCESS)
         }
         cli::Command::Report(c) => {
+            let mut c = c;
+            c.input = cli::resolve_default_path(&c.input);
+            c.output_dir = cli::resolve_default_path(&c.output_dir);
             report::run(c)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -47,14 +52,16 @@ fn try_main(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
             // `run` = collect (writes the database) immediately followed by
             // report (reads that same database). The shared `output` path is
             // what links the two phases.
-            let db = r.output;
+            let db = cli::resolve_default_path(&r.output);
+            let output_dir = cli::resolve_default_path(&r.output_dir);
+            let opts = r.opts;
             collect::run(cli::CollectArgs {
-                opts: r.opts,
+                opts,
                 output: db.clone(),
             })?;
             report::run(cli::ReportArgs {
                 input: db,
-                output_dir: r.output_dir,
+                output_dir,
                 theme: r.theme,
                 single_file: r.single_file,
             })?;

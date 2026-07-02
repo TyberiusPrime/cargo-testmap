@@ -1,5 +1,17 @@
 use clap::{Args, Parser, Subcommand};
 
+/// Resolve a default path that starts with `target/testmap` to
+/// `$CARGO_TARGET_DIR/testmap` when the env var is set, so we respect the
+/// user's chosen target directory.
+pub fn resolve_default_path(s: &str) -> String {
+    if let Ok(cargo_target) = std::env::var("CARGO_TARGET_DIR") {
+        if let Some(rest) = s.strip_prefix("target/testmap") {
+            return format!("{cargo_target}/testmap{rest}");
+        }
+    }
+    s.to_string()
+}
+
 /// cargo-testmap — which tests cover this line of code?
 #[derive(Parser)]
 #[command(

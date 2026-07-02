@@ -184,7 +184,7 @@ pub fn check_instrumented(target_exe: &Path, test_path: &str, cwd: &Path) -> Res
              produce a `.profraw`.
   this happens when cargo reuses a stale, non-instrumented build in the \
              coverage target dir.
-  fix: delete the coverage build dir ({} under target/testmap/) and re-run \
+  fix: delete the coverage build dir ({}) and re-run \
              `cargo testmap collect`.",
             target_exe.display(),
             target_exe.display()
