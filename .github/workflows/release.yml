@@ -37,7 +37,7 @@ jobs:
         run: nix build -L .#test
 
       - name: Build Linux binary
-        run: nix build -L .#cargo-testmap -o result-linux
+        run: nix build -L .#static-linux -o result-linux
 
       - name: Upload Linux binary as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

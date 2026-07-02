@@ -61,7 +61,7 @@ jobs:
         uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
 
       - name: Build the binary
-        run: nix build -L .#cargo-testmap
+        run: nix build -L .#static-linux
 
       - name: Stage binary into the workspace
         run: install -m755 result/bin/cargo-testmap ./cargo-testmap-bin
@@ -73,7 +73,7 @@ jobs:
             echo "== $img =="
             docker run --rm -v "$PWD":/w -w /w "$img" sh -c '
               set -e
-              OUTPUT=$(./cargo-testmap-bin)
+              OUTPUT=$(./cargo-testmap-bin --help)
               QUERY="cargo-testmap — which tests cover this line of code?"
               echo "$OUTPUT" | grep -qF "$QUERY"
             '
