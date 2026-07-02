@@ -39,7 +39,7 @@
         packages.cargo-testmap =
           (naersk-lib.buildPackage {
             pname = "cargo-testmap";
-            root = ./cargo_testmap;
+            root = ./cargo-testmap;
             nativeBuildInputs = with pkgs; [ pkg-config ];
             buildInputs = with pkgs; [ hdf5 ];
             release = true;
@@ -47,7 +47,7 @@
           }).overrideAttrs
             {
               postInstall = ''
-                install -Dm644 ${./cargo_testmap/completions/cargo-testmap.fish} \
+                install -Dm644 completions/cargo-testmap.fish \
                   $out/share/fish/vendor_completions.d/cargo-testmap.fish
               '';
             };
@@ -55,7 +55,7 @@
         packages.cargo-testmap_other_linux =
           (naersk-lib.buildPackage {
             pname = "cargo-testmap";
-            root = ./cargo_testmap;
+            root = ./cargo-testmap;
             nativeBuildInputs = with pkgs; [
               pkg-config
               patchelf
@@ -91,7 +91,7 @@
           };
 
         packages.check = naersk-lib.buildPackage {
-          src = ./cargo_testmap;
+          src = ./cargo-testmap;
           mode = "check";
           name = "cargo-testmap";
           nativeBuildInputs = with pkgs; [ pkg-config ];
@@ -100,7 +100,7 @@
 
         packages.test = naersk-lib.buildPackage {
           pname = "cargo-testmap";
-          root = ./cargo_testmap;
+          root = ./cargo-testmap;
           mode = "test";
           nativeBuildInputs = with pkgs; [ pkg-config ];
           buildInputs = with pkgs; [ hdf5 ];
@@ -124,6 +124,7 @@
             rust
             pkgs.cargo-llvm-cov
             pkgs.cargo-llvm-lines
+            pkgs.cargo-deny
             pkgs.lcov
           ];
         };

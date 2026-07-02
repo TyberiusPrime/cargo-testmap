@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # allow manual runs from the Actions tab / `gh workflow run`
+
+jobs:
+  # ── Linux: build + test via the Nix flake ─────────────────────────────────
+  nix-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Build (release)
+        run: nix build -L .#cargo-testmap
+
+      - name: Test
+        run: nix build -L .#test
+
+  # ── Native macOS + Windows: real test execution (no Nix) ──────────────────
+  native:
+    name: native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust
+        shell: bash
+        run: rustup update --no-self-update stable && rustup default stable
+
+      - name: Test
+        run: cargo test --manifest-path cargo-testmap/Cargo.toml
+
+  # ── Non-NixOS Linux: portable binary in plain containers ──────────────────
+  # Build the binary with Nix, then run it inside stock Alpine and Debian
+  # containers — with no Nix — to prove it works on ordinary Linux distros.
+  portable-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Build the binary
+        run: nix build -L .#cargo-testmap
+
+      - name: Stage binary into the workspace
+        run: install -m755 result/bin/cargo-testmap ./cargo-testmap-bin
+
+      - name: Run the binary in plain Alpine and Debian containers
+        run: |
+          set -euo pipefail
+          for img in alpine:latest debian:bookworm-slim; do
+            echo "== $img =="
+            docker run --rm -v "$PWD":/w -w /w "$img" sh -c '
+              set -e
+              OUTPUT=$(./cargo-testmap-bin)
+              QUERY="cargo-testmap — which tests cover this line of code?"
+              echo "$OUTPUT" | grep -qF "$QUERY"
+            '
+          done
