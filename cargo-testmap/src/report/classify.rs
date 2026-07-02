@@ -14,16 +14,34 @@
 //!   - tagged with `//cov:excl-line`, or
 //!   - containing `unreachable!` (automatic).
 //!
-//! A line is **ignored** when it is panic-shaped noise we don't want muddying
-//! the numbers:
+//! A line is **ignored** when it is coverage noise we don't want muddying the
+//! numbers:
 //!   - inside a `//cov:ignore-start` … `//cov:ignore-stop` region,
-//!   - tagged with `//cov:ignore-line`, or
+//!   - tagged with `//cov:ignore-line`,
 //!   - a panic site: `panic!`, `.unwrap()`, `.expect(`, `todo!`,
-//!     `unimplemented!`.
+//!     `unimplemented!`, or
+//!   - a multi-line macro invocation head (`matches!(`, `format!(`, `write!(`,
+//!     `println!(`, …) whose uncovered status is an llvm-cov instrumentation
+//!     artifact, not a real gap (see [`compute_macro_artifacts`]).
 //!
 //! Everything else executable is either **covered** (some test reached it) or
 //! **uncovered** (a real coverage gap). Non-executable lines (blanks,
 //! comments, bare braces) carry no dot and aren't counted.
+//!
+//! ## Multi-line macro heads (llvm-cov artifact)
+//!
+//! rustc source-based coverage (`-Cinstrument-coverage` → llvm-cov) anchors the
+//! region for a macro's *own* generated tokens at the macro's opening line
+//! (`name!(`) with a counter that is structurally always 0, while the macro's
+//! arguments keep their own call-site spans and are correctly marked covered.
+//! A multi-line macro therefore shows up as a single executable-but-uncovered
+//! line — its head — flanked by covered argument lines: pure instrumentation
+//! noise that would otherwise drag down the coverage percentage. We detect it
+//! (line opens a macro whose body spills onto following lines, is uncovered,
+//! yet its very next line is covered) and classify it as ignored so it is
+//! neither counted nor shown red. A genuinely-unhit multi-line macro (e.g. an
+//! untaken error branch) is left alone: there the following lines are also
+//! uncovered, so it stays a real gap.
 //!
 //! Dot colors (see style.css / ThemeColors):
 //!   - covered            → green
@@ -32,6 +50,9 @@
 //!   - ignored            → grey
 
 use crate::report::database::SourceFile;
+use regex::Regex;
+use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineClass {
@@ -45,7 +66,9 @@ pub enum LineClass {
     Excluded,
     /// Excluded but covered anyway — usually a stale exclusion marker.
     ExcludedCovered,
-    /// Ignored panic-shaped line (`ignore-*` / `.unwrap()` / `panic!` / …).
+    /// Ignored as coverage noise: a panic site (`ignore-*` / `.unwrap()` /
+    /// `panic!` / …) or a multi-line macro invocation head whose uncovered
+    /// status is an llvm-cov artifact, not a real gap.
     Ignored,
 }
 
@@ -72,7 +95,9 @@ impl LineClass {
             LineClass::ExcludedCovered => {
                 "excluded but covered anyway — the exclusion marker may be stale"
             }
-            LineClass::Ignored => "ignored — panic site (unwrap/expect/panic!/…) or ignore marker",
+            LineClass::Ignored => {
+                "ignored — panic site, ignore marker, or multi-line macro head (llvm-cov coverage artifact)"
+            }
         }
     }
 }
@@ -106,13 +131,14 @@ impl LineStats {
 /// such that `classes[i]` describes line `i + 1`.
 pub fn classify(src: &SourceFile) -> Vec<LineClass> {
     let (excluded, ignored) = compute_excl_ignored(&src.content);
-    let executable: std::collections::BTreeSet<u32> = src.executable.iter().copied().collect();
-    let covered: std::collections::BTreeSet<u32> = src
+    let executable: BTreeSet<u32> = src.executable.iter().copied().collect();
+    let covered: BTreeSet<u32> = src
         .lines
         .keys()
         .chain(src.above_threshold.keys())
         .filter_map(|k| k.parse::<u32>().ok())
         .collect();
+    let macro_artifact = compute_macro_artifacts(&src.content, &executable, &covered);
 
     let n = excluded.len().max(ignored.len());
     let mut out = Vec::with_capacity(n);
@@ -124,7 +150,9 @@ pub fn classify(src: &SourceFile) -> Vec<LineClass> {
             continue;
         }
         let excl = excluded[i];
-        let ign = ignored[i];
+        // A multi-line macro head phantom is the same kind of coverage noise as
+        // a panic site — fold it into the ignored flag.
+        let ign = ignored[i] || macro_artifact[i];
         let cov = covered.contains(&lineno);
         let class = if excl && cov {
             LineClass::ExcludedCovered
@@ -239,6 +267,68 @@ fn is_panic_line(line: &str) -> bool {
         || line.contains("unimplemented!")
 }
 
+/// Per-line flags marking phantom coverage gaps left by multi-line macro
+/// invocations (see the module docs for *why* these exist).
+///
+/// A line is flagged iff it is executable and uncovered, it opens a macro
+/// invocation that spills onto the following line(s) ([`opens_multiline_macro`]),
+/// and the line immediately after it *is* covered — i.e. the macro body really
+/// was reached, so the uncovered head is instrumentation noise rather than a
+/// real gap. That last condition is what stops a genuinely-unhit multi-line
+/// macro (its body lines are also uncovered) from being suppressed.
+fn compute_macro_artifacts(
+    content: &str,
+    executable: &BTreeSet<u32>,
+    covered: &BTreeSet<u32>,
+) -> Vec<bool> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = vec![false; lines.len()];
+    for (i, raw) in lines.iter().enumerate() {
+        let lineno = (i + 1) as u32;
+        // Only executable-but-uncovered lines can be the artifact.
+        if !executable.contains(&lineno) || covered.contains(&lineno) {
+            continue;
+        }
+        if !opens_multiline_macro(raw) {
+            continue;
+        }
+        // The macro's first argument line is covered → the call was reached,
+        // so the head being uncovered is the llvm-cov artifact.
+        if covered.contains(&(lineno + 1)) {
+            out[i] = true;
+        }
+    }
+    out
+}
+
+/// True if `line` opens a macro invocation whose body continues onto the
+/// following line(s): it contains an `ident!` immediately followed by an
+/// opening delimiter, and that delimiter is left open at the end of the line.
+///
+/// The bracket balance is counted on the comment-stripped line. Macro *head*
+/// lines (`matches!(`, `write!(`, `errors.push(format!(`, …) carry no string
+/// literals, so a plain character count is reliable there; stripping `//`
+/// comments keeps a stray `foo!(` in a trailing comment from false-triggering.
+fn opens_multiline_macro(line: &str) -> bool {
+    static MACRO_HEAD: LazyLock<Regex> = LazyLock::new(|| {
+        // `ident!` then optional whitespace then an opening bracket.
+        Regex::new(r"[A-Za-z_][A-Za-z0-9_]*!\s*[(\[{]").unwrap()
+    });
+    let code = line.split("//").next().unwrap_or(line);
+    if !MACRO_HEAD.is_match(code) {
+        return false;
+    }
+    let mut depth: i32 = 0;
+    for c in code.chars() {
+        match c {
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +350,16 @@ mod tests {
 
     fn classes(src: &SourceFile) -> Vec<LineClass> {
         classify(src)
+    }
+
+    /// Like [`file`] but also marks the given 1-indexed lines as covered
+    /// (with an empty covering-test list — presence in `lines` is all
+    /// `classify` checks).
+    fn covered(mut src: SourceFile, lines: &[u32]) -> SourceFile {
+        for &ln in lines {
+            src.lines.insert(ln.to_string(), vec![]);
+        }
+        src
     }
 
     #[test]
@@ -380,5 +480,106 @@ mod tests {
         assert_eq!(s.excluded, 1);
         assert_eq!(s.ignored, 1);
         assert_eq!(s.pct(), Some(100));
+    }
+
+    // --- multi-line macro head phantom detection ---------------------------
+
+    #[test]
+    fn multiline_macro_head_phantom_is_ignored() {
+        // The classic matches! artifact: the head line is executable but never
+        // covered, while its argument lines (the same statement) are covered.
+        let src = covered(
+            file(
+                "    let needs = actions.iter().any(|a| {\n\
+                 matches!(\n\
+                 a.as_str(),\n\
+                 \"X\" | \"Y\"\n\
+                 )\n\
+                 });\n",
+            ),
+            &[1, 3, 4, 5, 6],
+        );
+        let c = classes(&src);
+        assert_eq!(c[0], LineClass::Covered); // let … any(|a| {
+        assert_eq!(c[1], LineClass::Ignored); // matches!(  ← phantom
+        assert_eq!(c[2], LineClass::Covered); // a.as_str(),
+        assert_eq!(c[3], LineClass::Covered); // "X" | "Y"
+        assert_eq!(c[4], LineClass::Covered); // )
+        assert_eq!(c[5], LineClass::Covered); // });
+        // The phantom is noise, not a gap: ignored (not coverable) → still 100%.
+        // Before this fix it read as Uncovered, dragging the file to 83%.
+        let s = stats(&c);
+        assert_eq!(s.coverable, 5);
+        assert_eq!(s.covered, 5);
+        assert_eq!(s.ignored, 1);
+        assert_eq!(s.pct(), Some(100));
+    }
+
+    #[test]
+    fn multiline_macro_in_unhit_branch_stays_uncovered() {
+        // A multi-line format! in a branch no test takes: head AND body are
+        // uncovered — a real gap. The head must NOT be suppressed, because its
+        // following line is also uncovered.
+        let src = file(
+            "let s = if cond {\n\
+             format!(\n\
+             \"hi {}\",\n\
+             name\n\
+             )\n\
+             } else {\n\
+             String::new()\n\
+             };\n",
+        );
+        let c = classes(&src);
+        assert_eq!(c[1], LineClass::Uncovered); // format!(  ← real gap
+        assert_eq!(c[2], LineClass::Uncovered); // "hi {}",
+    }
+
+    #[test]
+    fn nested_macro_head_phantom_is_ignored() {
+        // errors.push(format!( … )): llvm-cov marks the format! head uncovered
+        // while the outer .push( and the string/arg lines are covered.
+        let src = covered(
+            file("errors.push(format!(\n\"err: {}\",\nmsg\n));\n"),
+            &[2, 3, 4],
+        );
+        assert_eq!(classes(&src)[0], LineClass::Ignored); // errors.push(format!(
+    }
+
+    #[test]
+    fn single_line_macro_uncovered_stays_uncovered() {
+        // A single-line macro has no phantom (head and args share a line), so
+        // an uncovered one is a genuine gap — must not be suppressed.
+        let src = file("let s = format!(\"hi {}\", name);\n");
+        assert_eq!(classes(&src)[0], LineClass::Uncovered);
+    }
+
+    #[test]
+    fn covered_multiline_macro_head_is_covered() {
+        // If the head is somehow covered (it usually isn't — that's the
+        // artifact), it must read as covered, not ignored.
+        let mut src = file("format!(\n\"x\"\n)\n");
+        src.lines.insert("1".to_string(), vec![]);
+        assert_eq!(classes(&src)[0], LineClass::Covered);
+    }
+
+    #[test]
+    fn opens_multiline_macro_detects_heads() {
+        let f = opens_multiline_macro;
+        // multi-line heads (opener left open)
+        assert!(f("        matches!("));
+        assert!(f("        write!("));
+        assert!(f("        errors.push(format!("));
+        assert!(f("    foo! {")); // braced macro
+        assert!(f("    bar![")); // bracketed macro
+        // single-line / balanced → not a multi-line head
+        assert!(!f("    let s = format!(\"hi {}\", x);"));
+        assert!(!f("    matches!(a.as_str(), \"X\")"));
+        // not a macro at all
+        assert!(!f("    if cond {"));
+        assert!(!f("    let x = foo(")); // function call, no `!`
+        assert!(!f("    if a != 0 {")); // `!=` is not a macro
+        // a stray `foo!(` in a trailing comment must not trigger
+        assert!(!f("    let x = 1; // see format!("));
     }
 }
