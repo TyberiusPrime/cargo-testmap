@@ -194,9 +194,6 @@ pub enum StatsClick<'a> {
     /// Clicking scrolls to the next matching line within one file's section
     /// (single-file report's per-file rows).
     ScrollFile(&'a str),
-    /// Clicking navigates to another page (a per-file page) and scrolls there
-    /// via a `?jump=` query param (directory index file rows).
-    LinkFile(&'a str),
 }
 
 /// Render a coverage summary line for a totals or per-file block.
@@ -239,10 +236,39 @@ fn jump_part(kind: &str, n: u32, base: &str, click: StatsClick<'_>) -> String {
             " · <a class=\"jump {base}\" data-jump=\"{kind}\" data-file-id=\"{id}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {kind}</a>",
             id = fnv1a(path)
         ),
-        StatsClick::LinkFile(url) => format!(
-            " · <a class=\"jump {base}\" href=\"{}?jump={kind}\">{n} {kind}</a>",
+    }
+}
+
+/// A neutral `-` placeholder for a zero count in the index table's
+/// uncovered/excluded/ignored columns: reads as "none" in the default font
+/// color instead of a colored `0`. The cell keeps `data-v="0"`, so the column
+/// still sorts correctly.
+fn zero_dash() -> String {
+    "<span class=\"dash\">-</span>".to_string()
+}
+
+/// A plain count for a non-jump index column (e.g. excluded), rendered as a
+/// [`zero_dash`] when zero.
+fn count_or_dash(n: u32) -> String {
+    if n == 0 {
+        zero_dash()
+    } else {
+        n.to_string()
+    }
+}
+
+/// A bare count cell for the index table's uncovered/ignored columns: a plain
+/// `<a class="jump …">` (linking into the file page at the first matching line
+/// via `?jump=`) when non-zero, or a [`zero_dash`] when there's nothing to
+/// jump to.
+fn jump_count_link(url: &str, kind: &str, n: u32, base: &str) -> String {
+    if n == 0 {
+        zero_dash()
+    } else {
+        format!(
+            "<a class=\"jump {base}\" href=\"{}?jump={kind}\">{n}</a>",
             escape(url)
-        ),
+        )
     }
 }
 
@@ -306,9 +332,9 @@ pub fn render_directory(
             stats_html(total, StatsClick::None)
         ));
         html.push_str(legend_html());
-        html.push_str("<ul class=\"filelist\">");
-        // Worst-covered files first (most coverable first breaks ties) so files
-        // missing coverage jump out instead of being buried alphabetically.
+        // Sortable per-file table. Initial order is worst-coverage-first (then
+        // most uncovered, then path) so files missing coverage jump out instead
+        // of being buried alphabetically; the column headers re-sort client-side.
         let mut order: Vec<(&String, LineStats)> = class_map
             .iter()
             .map(|(p, (_, s))| (p, *s))
@@ -325,15 +351,61 @@ pub fn render_directory(
                 })
                 .then_with(|| a.0.cmp(b.0))
         });
+        html.push_str("<table class=\"filelist-table\" data-sortable><thead><tr>");
+        html.push_str("<th data-sort=\"path\">file</th>");
+        html.push_str("<th data-sort=\"covered\" data-numeric=\"1\">covered</th>");
+        html.push_str("<th data-sort=\"coverable\" data-numeric=\"1\">coverable</th>");
+        html.push_str("<th data-sort=\"pct\" data-numeric=\"1\">%</th>");
+        html.push_str("<th data-sort=\"uncovered\" data-numeric=\"1\">uncovered</th>");
+        html.push_str("<th data-sort=\"excluded\" data-numeric=\"1\">excluded</th>");
+        html.push_str("<th data-sort=\"ignored\" data-numeric=\"1\">ignored</th>");
+        html.push_str("</tr></thead><tbody>");
         for (path, s) in order {
             let url = format!("{}.html", path);
+            let uncovered = s.coverable.saturating_sub(s.covered);
+            let (pct_v, pct_txt) = match s.pct() {
+                Some(p) => (p, format!("{p}%")),
+                None => (0, "—".to_string()),
+            };
+            html.push_str("<tr>");
             html.push_str(&format!(
-                "<li><a href=\"{name}.html\">{name}</a> <span class=\"stats\">{stats}</span></li>",
-                name = escape(path),
-                stats = stats_html(s, StatsClick::LinkFile(&url))
+                "<td class=\"fname\" data-v=\"{}\"><a href=\"{}\">{}</a></td>",
+                escape(path),
+                escape(&url),
+                escape(path)
             ));
+            html.push_str(&format!(
+                "<td class=\"num covered\" data-v=\"{}\">{}</td>",
+                s.covered, s.covered
+            ));
+            html.push_str(&format!(
+                "<td class=\"num coverable\" data-v=\"{}\">{}</td>",
+                s.coverable, s.coverable
+            ));
+            html.push_str(&format!(
+                "<td class=\"num pct\" data-v=\"{}\">{}</td>",
+                pct_v, pct_txt
+            ));
+            html.push_str(&format!(
+                "<td class=\"num gap\" data-v=\"{}\">{}</td>",
+                uncovered,
+                jump_count_link(&url, "uncovered", uncovered, "gap")
+            ));
+            html.push_str(&format!(
+                "<td class=\"num muted\" data-v=\"{}\">{}</td>",
+                s.excluded,
+                count_or_dash(s.excluded)
+            ));
+            html.push_str(&format!(
+                "<td class=\"num muted\" data-v=\"{}\">{}</td>",
+                s.ignored,
+                jump_count_link(&url, "ignored", s.ignored, "muted")
+            ));
+            html.push_str("</tr>");
         }
-        html.push_str("</ul></main></body></html>");
+        html.push_str("</tbody></table>");
+        html.push_str(&format!("<script>{TABLE_SORT_JS}</script>"));
+        html.push_str("</main></body></html>");
         fs::write(out_dir.join("index.html"), html)?;
     }
 
@@ -400,15 +472,18 @@ pub fn render_directory(
     Ok(())
 }
 
-/// Client-side column sort for the tests catalog. Pair-aware: each failed
-/// test is followed by a trailing `.failout` row holding its output, so we
-/// sort the primary rows and re-thread their output rows behind them rather
-/// than sorting every `<tr>` independently (which would detach outputs from
-/// their tests).
-const TESTS_SORT_JS: &str = "\
-(function(){var t=document.querySelector('table.tests-table');if(!t)return;\
-var tb=t.tBodies[0];if(!tb)return;var hs=t.querySelectorAll('th[data-sort]');\
-var key=null,dir=1;hs.forEach(function(th){th.addEventListener('click',function(){\
+/// Client-side column sort for any `<table data-sortable>`. Click a `th` with a
+/// `data-sort` key to sort; numeric columns carry `data-numeric="1"`. Each
+/// cell's sort value comes from its `data-v`, falling back to trimmed text.
+/// Pair-aware: a primary row may be followed by trailing `.failout` rows
+/// (failed-test output on the tests catalog) that must stay attached to their
+/// test, so we sort (row, extras) pairs rather than every `<tr>` independently
+/// (which would detach outputs from their tests).
+const TABLE_SORT_JS: &str = "\
+(function(){var ts=document.querySelectorAll('table[data-sortable]');\
+ts.forEach(function(t){var tb=t.tBodies[0];if(!tb)return;\
+var hs=t.querySelectorAll('th[data-sort]');var key=null,dir=1;\
+hs.forEach(function(th){th.addEventListener('click',function(){\
 var k=th.dataset.sort,num=th.dataset.numeric==='1';dir=(key===k)?-dir:1;key=k;\
 hs.forEach(function(h){h.classList.remove('sort-asc','sort-desc');});\
 th.classList.add(dir>0?'sort-asc':'sort-desc');var c=th.cellIndex;\
@@ -421,7 +496,7 @@ var av=ra.cells[c].dataset.v;if(av===undefined)av=ra.cells[c].textContent.trim()
 var bv=rb.cells[c].dataset.v;if(bv===undefined)bv=rb.cells[c].textContent.trim();\
 if(num){av=+av;bv=+bv;}return av<bv?-dir:av>bv?dir:0;});\
 while(tb.firstChild)tb.removeChild(tb.firstChild);\
-pairs.forEach(function(p){tb.appendChild(p[0]);p[1].forEach(function(e){tb.appendChild(e);});});});});})();";
+pairs.forEach(function(p){tb.appendChild(p[0]);p[1].forEach(function(e){tb.appendChild(e);});});});});});})();";
 
 /// Render `tests.html` — a catalog of every test testmap observed, with the
 /// number of mapped lines each one covers. Tests that ran but covered no
@@ -476,7 +551,7 @@ pub fn render_tests_page(
     ));
     html.push_str(&meta);
 
-    html.push_str("<table class=\"tests-table\"><thead><tr>");
+    html.push_str("<table class=\"tests-table\" data-sortable><thead><tr>");
     html.push_str("<th data-sort=\"idx\">#</th>");
     html.push_str("<th data-sort=\"status\">status</th>");
     html.push_str("<th data-sort=\"kind\">kind</th>");
@@ -534,7 +609,7 @@ pub fn render_tests_page(
         ));
         html.push_str("</tr>");
         // A failed test's captured output lives in a trailing full-width row
-        // (kept attached to this test during sort — see TESTS_SORT_JS). This
+        // (kept attached to this test during sort — see TABLE_SORT_JS). This
         // is the report's way of answering "why did this test fail?".
         if failed {
             match t.failure_output.filter(|s| !s.trim().is_empty()) {
@@ -557,7 +632,7 @@ pub fn render_tests_page(
     }
     html.push_str("</tbody></table>");
     html.push_str("</main>");
-    html.push_str(&format!("<script>{TESTS_SORT_JS}</script>"));
+    html.push_str(&format!("<script>{TABLE_SORT_JS}</script>"));
     html.push_str("</body></html>");
 
     fs::write(out_dir.join("tests.html"), html)?;

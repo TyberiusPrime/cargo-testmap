@@ -36,6 +36,47 @@ ul.filelist li {
 ul.filelist li:hover { background: var(--bg-row); }
 .count { color: var(--fg-dim); font-size: .85rem; }
 
+/* Sortable per-file coverage table on the directory index (index.html). */
+.filelist-table {
+  width: 100%;
+  max-width: 60rem;
+  border-collapse: collapse;
+  font-size: .9rem;
+}
+.filelist-table th,
+.filelist-table td {
+  text-align: right;
+  padding: .28rem .6rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.filelist-table th:first-child,
+.filelist-table td:first-child { text-align: left; }
+.filelist-table th {
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev);
+  z-index: 1;
+}
+.filelist-table th:hover { color: var(--fg); }
+.filelist-table th.sort-asc::after { content: " ▲"; color: var(--accent); }
+.filelist-table th.sort-desc::after { content: " ▼"; color: var(--accent); }
+.filelist-table td.fname { white-space: normal; word-break: break-word; }
+.filelist-table td.covered { color: var(--dot-covered); font-weight: 600; }
+.filelist-table td.coverable { color: var(--fg); }
+.filelist-table td.pct { color: var(--fg-dim); }
+.filelist-table td.gap,
+.filelist-table a.jump.gap { color: var(--fail); font-weight: 600; }
+.filelist-table td.muted,
+.filelist-table a.jump.muted { color: var(--fg-dim); }
+/* Zero-count placeholder ("-") in the uncovered/excluded/ignored columns:
+   default color + weight, overriding the column's gap/muted styling. */
+.filelist-table .dash { color: var(--fg); font-weight: 400; }
+.filelist-table tr:hover td { background: var(--bg-row); }
+
 .toolbar {
   position: sticky;
   top: 0;
