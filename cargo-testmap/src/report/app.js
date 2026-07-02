@@ -162,3 +162,69 @@
     });
   });
 })();
+
+// Click-to-jump: the "N uncovered" / "N ignored" links scroll to the next
+// matching line (cycling). Each link carries `data-jump` ("uncovered"/"ignored")
+// and, on the single-file report, an optional `data-file-id` scoping it to one
+// file's section. Directory index rows navigate via `?jump=` (handled below on
+// load) rather than firing this handler.
+(function () {
+  "use strict";
+  var state = {}; // "kind:scope" -> last visited index
+
+  function candidates(kind, scope) {
+    var sel = "tr.cov-" + kind;
+    var root = scope ? document.getElementById("file-" + scope) : document;
+    if (!root) return [];
+    return Array.prototype.slice.call(root.querySelectorAll(sel));
+  }
+
+  function flash(tr) {
+    tr.classList.remove("jump-target");
+    // Force a reflow so re-adding restarts the animation (repeated jumps).
+    void tr.offsetWidth;
+    tr.classList.add("jump-target");
+    setTimeout(function () { tr.classList.remove("jump-target"); }, 1600);
+  }
+
+  // `advance` cycles to the next match; without it we land on the first
+  // (used by the `?jump=` deep link on page load).
+  function jump(kind, scope, advance) {
+    var list = candidates(kind, scope);
+    if (!list.length) return;
+    var key = kind + ":" + (scope || "");
+    var last = state[key] == null ? -1 : state[key];
+    var idx = advance ? (last + 1) % list.length : 0;
+    state[key] = idx;
+    var tr = list[idx];
+    tr.scrollIntoView({ block: "center" });
+    flash(tr);
+  }
+
+  function activate(a) {
+    jump(a.dataset.jump, a.dataset.fileId || null, true);
+  }
+
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[data-jump]");
+    if (!a) return;
+    e.preventDefault();
+    activate(a);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    var a = e.target.closest && e.target.closest("a[data-jump]");
+    if (!a) return;
+    e.preventDefault();
+    activate(a);
+  });
+
+  // Deep link from the directory index: ?jump=uncovered / ?jump=ignored lands
+  // on the first matching line of this file.
+  try {
+    var j = new URLSearchParams(window.location.search).get("jump");
+    if (j === "uncovered" || j === "ignored") {
+      requestAnimationFrame(function () { jump(j, null, false); });
+    }
+  } catch (_) {}
+})();

@@ -153,7 +153,7 @@ impl ThemeColors {
             // ignored is a dim grey; excluded-but-covered is pink. The exact
             // shades adapt to light/dark themes so every dot stays readable.
             dot_covered: if is_dark { "#99c794" } else { "#2e7d32" }.to_string(),
-            dot_uncovered: if is_dark { "#5c6370" } else { "#b8bcc2" }.to_string(),
+            dot_uncovered: if is_dark { "#e06c75" } else { "#c0392b" }.to_string(),
             dot_excluded: if is_dark { "#e8eaed" } else { "#5f6368" }.to_string(),
             dot_excl_covered: hex(pink),
             dot_ignored: if is_dark { "#6c7a89" } else { "#9aa0a6" }.to_string(),

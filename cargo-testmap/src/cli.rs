@@ -20,10 +20,17 @@ pub enum Command {
     Collect(CollectArgs),
     /// Generate an HTML report from a testmap.json database.
     Report(ReportArgs),
+    /// Collect coverage and build the report in one go (collect then report).
+    Run(RunArgs),
 }
 
+/// Test-selection & collection options shared by `collect` and `run`.
+///
+/// Keeping these in one struct (flattened into both subcommands) guarantees
+/// the two stay in sync — adding an option to collection automatically makes
+/// it available to `run` too.
 #[derive(Args)]
-pub struct CollectArgs {
+pub struct CollectOpts {
     /// Collect across all workspace members (default).
     #[arg(long)]
     pub workspace: bool,
@@ -62,13 +69,19 @@ pub struct CollectArgs {
     #[arg(short = 'j', long = "jobs")]
     pub jobs: Option<usize>,
 
-    /// Database output path (default: target/testmap/testmap.json).
-    #[arg(long, default_value = "target/testmap/testmap.json")]
-    pub output: String,
-
     /// Suppress cargo's own output (handled by testmap).
     #[arg(short = 'v', long, default_value_t = false)]
     pub verbose: bool,
+}
+
+#[derive(Args)]
+pub struct CollectArgs {
+    #[command(flatten)]
+    pub opts: CollectOpts,
+
+    /// Database output path (default: target/testmap/testmap.json).
+    #[arg(long, default_value = "target/testmap/testmap.json")]
+    pub output: String,
 }
 
 #[derive(Args)]
@@ -76,6 +89,37 @@ pub struct ReportArgs {
     /// Database input path (default: target/testmap/testmap.json).
     #[arg(long, default_value = "target/testmap/testmap.json")]
     pub input: String,
+
+    /// Report output directory (default: target/testmap/report).
+    #[arg(long, default_value = "target/testmap/report")]
+    pub output_dir: String,
+
+    /// Syntax-highlighting theme.
+    ///
+    /// Available built-ins: base16-ocean.dark (default), base16-mocha.dark,
+    /// base16-eighties.dark, base16-ocean.light, Solarized (dark),
+    /// Solarized (light), InspiredGitHub.
+    #[arg(long)]
+    pub theme: Option<String>,
+
+    /// Generate a single self-contained HTML file instead of a directory.
+    #[arg(long, value_name = "PATH")]
+    pub single_file: Option<String>,
+}
+
+/// Arguments for `cargo testmap run` — a combined `collect` + `report`.
+///
+/// The shared `--output` database path is what collect writes *and* what
+/// report reads, so the two phases always agree.
+#[derive(Args)]
+pub struct RunArgs {
+    #[command(flatten)]
+    pub opts: CollectOpts,
+
+    /// Database path: collect writes here, report reads here
+    /// (default: target/testmap/testmap.json).
+    #[arg(long, default_value = "target/testmap/testmap.json")]
+    pub output: String,
 
     /// Report output directory (default: target/testmap/report).
     #[arg(long, default_value = "target/testmap/report")]

@@ -182,9 +182,27 @@ fn legend_html() -> &'static str {
 <span><span class=\"dot ignored\"></span>ignored</span></div>"
 }
 
+/// How (or whether) the "N uncovered" / "N ignored" parts of a stats line
+/// react to being clicked.
+#[derive(Clone, Copy)]
+pub enum StatsClick<'a> {
+    /// Plain spans — no interaction (e.g. the aggregate index total).
+    None,
+    /// Clicking scrolls to the next matching line on the current page
+    /// (per-file pages, and the single-file report's grand total).
+    ScrollPage,
+    /// Clicking scrolls to the next matching line within one file's section
+    /// (single-file report's per-file rows).
+    ScrollFile(&'a str),
+    /// Clicking navigates to another page (a per-file page) and scrolls there
+    /// via a `?jump=` query param (directory index file rows).
+    LinkFile(&'a str),
+}
+
 /// Render a coverage summary line for a totals or per-file block.
-/// `uncovered` is `coverable - covered`.
-fn stats_html(s: LineStats) -> String {
+/// `uncovered` is `coverable - covered`. The "uncovered" and "ignored" parts
+/// become clickable jump links when `click` asks for it.
+fn stats_html(s: LineStats, click: StatsClick<'_>) -> String {
     let uncovered = s.coverable.saturating_sub(s.covered);
     let pct = match s.pct() {
         Some(p) => format!("{p}%"),
@@ -196,17 +214,36 @@ fn stats_html(s: LineStats) -> String {
     );
     out.push_str(&format!(" <span class=\"pct\">({pct})</span>"));
     if uncovered > 0 {
-        out.push_str(&format!(
-            " · <span class=\"gap\">{uncovered} uncovered</span>"
-        ));
+        out.push_str(&jump_part("uncovered", uncovered, "gap", click));
     }
     if s.excluded > 0 {
-        out.push_str(&format!(" · <span class=\"muted\">{} excluded</span>", s.excluded));
+        out.push_str(&format!(
+            " · <span class=\"muted\">{} excluded</span>",
+            s.excluded
+        ));
     }
     if s.ignored > 0 {
-        out.push_str(&format!(" · <span class=\"muted\">{} ignored</span>", s.ignored));
+        out.push_str(&jump_part("ignored", s.ignored, "muted", click));
     }
     out
+}
+
+/// Render one clickable-or-plain "N <kind>" fragment for [`stats_html`].
+fn jump_part(kind: &str, n: u32, base: &str, click: StatsClick<'_>) -> String {
+    match click {
+        StatsClick::None => format!(" · <span class=\"{base}\">{n} {kind}</span>"),
+        StatsClick::ScrollPage => format!(
+            " · <a class=\"jump {base}\" data-jump=\"{kind}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {kind}</a>"
+        ),
+        StatsClick::ScrollFile(path) => format!(
+            " · <a class=\"jump {base}\" data-jump=\"{kind}\" data-file-id=\"{id}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {kind}</a>",
+            id = fnv1a(path)
+        ),
+        StatsClick::LinkFile(url) => format!(
+            " · <a class=\"jump {base}\" href=\"{}?jump={kind}\">{n} {kind}</a>",
+            escape(url)
+        ),
+    }
 }
 
 /// Render a multi-file directory report (the default).
@@ -266,7 +303,7 @@ pub fn render_directory(
         // Total coverable line count so missing coverage is spottable at a glance.
         html.push_str(&format!(
             "<p class=\"total\">total: {}</p>",
-            stats_html(total)
+            stats_html(total, StatsClick::None)
         ));
         html.push_str(legend_html());
         html.push_str("<ul class=\"filelist\">");
@@ -289,11 +326,11 @@ pub fn render_directory(
                 .then_with(|| a.0.cmp(b.0))
         });
         for (path, s) in order {
+            let url = format!("{}.html", path);
             html.push_str(&format!(
-                "<li><a href=\"{}.html\">{name}</a> <span class=\"stats\">{stats}</span></li>",
-                escape(path),
+                "<li><a href=\"{name}.html\">{name}</a> <span class=\"stats\">{stats}</span></li>",
                 name = escape(path),
-                stats = stats_html(s)
+                stats = stats_html(s, StatsClick::LinkFile(&url))
             ));
         }
         html.push_str("</ul></main></body></html>");
@@ -327,7 +364,7 @@ pub fn render_directory(
         html.push_str(&format!("<span class=\"path\">{}</span>", escape(&view.path)));
         html.push_str(&format!(
             "<span class=\"toolbar-stats\">{}</span>",
-            stats_html(class_map[&view.path].1)
+            stats_html(class_map[&view.path].1, StatsClick::ScrollPage)
         ));
         html.push_str("</div>");
 
@@ -566,7 +603,7 @@ pub fn render_single_file(
         total.ignored += s.ignored;
         file_classes.insert(path.clone(), classes);
     }
-    html.push_str(&format!("<p class=\"total\">total: {}</p>", stats_html(total)));
+    html.push_str(&format!("<p class=\"total\">total: {}</p>", stats_html(total, StatsClick::ScrollPage)));
     html.push_str(legend_html());
     html.push_str("<ul class=\"filelist\">");
     for view in views {
@@ -576,7 +613,7 @@ pub fn render_single_file(
             "<li><a href=\"#file-{id}\">{name}</a> <span class=\"stats\">{stats}</span></li>",
             id = fnv1a(&view.path),
             name = escape(&view.path),
-            stats = stats_html(stats)
+            stats = stats_html(stats, StatsClick::ScrollFile(view.path.as_str()))
         ));
     }
     html.push_str("</ul></main>");

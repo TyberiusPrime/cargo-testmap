@@ -22,15 +22,15 @@ pub fn run(args: CollectArgs) -> Result<()> {
     let cfg = Config::load(&dir)?;
 
     // Merge config-file defaults with CLI flags (CLI wins).
-    let filter = args.filter.or(cfg.collect.filter);
-    let skip = args.skip.or(cfg.collect.skip);
+    let filter = args.opts.filter.or(cfg.collect.filter);
+    let skip = args.opts.skip.or(cfg.collect.skip);
     // `--threshold` defaults to 10, so we can't tell a user-provided 10 from
     // the default; treat 10 as "not set" and prefer the config-file value then.
     let threshold = match cfg.collect.threshold {
-        Some(t) if args.threshold == 10 => t,
-        _ => args.threshold,
+        Some(t) if args.opts.threshold == 10 => t,
+        _ => args.opts.threshold,
     };
-    let jobs = args.jobs.or(cfg.collect.jobs);
+    let jobs = args.opts.jobs.or(cfg.collect.jobs);
 
     let filter_re = match &filter {
         Some(p) => Some(Regex::new(p).with_context(|| format!("invalid --filter regex {p}"))?),
@@ -76,29 +76,29 @@ pub fn run(args: CollectArgs) -> Result<()> {
     let cov_target_dir_str = cov_target_dir.to_string_lossy().into_owned();
     // Assemble the cargo target-selection arguments (forwarded to the build).
     let mut cargo_select: Vec<String> = Vec::new();
-    if args.workspace {
+    if args.opts.workspace {
         cargo_select.push("--workspace".to_string());
     }
-    if let Some(p) = &args.package {
+    if let Some(p) = &args.opts.package {
         cargo_select.push("--package".to_string());
         cargo_select.push(p.clone());
     }
     for (flag, set) in [
-        ("--lib", args.lib),
-        ("--bins", args.bins),
-        ("--tests", args.tests),
+        ("--lib", args.opts.lib),
+        ("--bins", args.opts.bins),
+        ("--tests", args.opts.tests),
     ] {
         if set {
             cargo_select.push(flag.to_string());
         }
     }
-    cargo_select.extend(args.cargo_args.iter().cloned());
+    cargo_select.extend(args.opts.cargo_args.iter().cloned());
     eprintln!("→ building instrumented test binaries…");
     let (built_targets, objects) = test_discovery::build_targets(
         &dir,
         &cargo_select,
         &cov_target_dir_str,
-        args.verbose,
+        args.opts.verbose,
     )?;
 
     // --- Step 3: enumerate tests per binary -------------------------------

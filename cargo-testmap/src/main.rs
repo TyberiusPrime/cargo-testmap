@@ -43,5 +43,22 @@ fn try_main(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
             report::run(c)?;
             Ok(ExitCode::SUCCESS)
         }
+        cli::Command::Run(r) => {
+            // `run` = collect (writes the database) immediately followed by
+            // report (reads that same database). The shared `output` path is
+            // what links the two phases.
+            let db = r.output;
+            collect::run(cli::CollectArgs {
+                opts: r.opts,
+                output: db.clone(),
+            })?;
+            report::run(cli::ReportArgs {
+                input: db,
+                output_dir: r.output_dir,
+                theme: r.theme,
+                single_file: r.single_file,
+            })?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }

@@ -27,7 +27,7 @@
 //!
 //! Dot colors (see style.css / ThemeColors):
 //!   - covered            → green
-//!   - uncovered          → dim
+//!   - uncovered          → red
 //!   - excluded           → white        (pink if covered anyway)
 //!   - ignored            → grey
 

@@ -41,12 +41,14 @@ count. Files are ordered worst-coverage-first.
 
 Every executable source line is classified into one category, shown as a
 colored dot in its gutter (hover the dot for an explanation; the index also has
-a legend):
+a legend). The **uncovered** and **ignored** counts in a stats line are
+links — click them to jump to the next such line (on the index they jump into
+the file). Uncovered lines get a red dot so gaps are obvious at a glance.
 
 | Dot color | Category      | Meaning                                                       |
 |-----------|---------------|---------------------------------------------------------------|
 | green     | covered       | reached by at least one test                                  |
-| dim       | uncovered     | a real gap — no test reached it                               |
+| red       | uncovered     | a real gap — no test reached it                               |
 | white     | excluded      | coverage is *not expected* (see markers / `unreachable!`)     |
 | pink      | excl-covered  | excluded but covered anyway — the marker is probably stale    |
 | grey      | ignored       | panic-shaped noise (`unwrap`/`expect`/`panic!`/…) or markers  |

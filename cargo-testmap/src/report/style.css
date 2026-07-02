@@ -77,7 +77,7 @@ pre.source td.lc {
   width: 100%;
 }
 /* Gutter dots: one per executable line, colored by classification.
-   green = covered, dim = uncovered (a gap), white = excluded,
+   green = covered, red = uncovered (a gap), white = excluded,
    pink = excluded-but-covered, grey = ignored. */
 pre.source tr.cov-covered td.ln::before,
 pre.source tr.cov-uncovered td.ln::before,
@@ -88,7 +88,7 @@ pre.source tr.cov-ignored td.ln::before {
   margin-right: .4ch;
 }
 pre.source tr.cov-covered    td.ln::before { color: var(--dot-covered); }
-pre.source tr.cov-uncovered  td.ln::before { color: var(--dot-uncovered); opacity: .6; }
+pre.source tr.cov-uncovered  td.ln::before { color: var(--dot-uncovered); }
 pre.source tr.cov-excluded   td.ln::before { color: var(--dot-excluded); }
 pre.source tr.cov-excl-covered td.ln::before { color: var(--dot-excl-covered); }
 pre.source tr.cov-ignored    td.ln::before { color: var(--dot-ignored); }
@@ -145,14 +145,37 @@ pre.source tr.pinned td.ln { color: #d8e6a8; }
 }
 .index .total { margin: 0 0 1rem; color: var(--fg); }
 .index .total .pct,
-.filelist .stats .pct { color: var(--fg-dim); }
+.filelist .stats .pct,
+.toolbar-stats .pct { color: var(--fg-dim); }
 .index .total .covered,
-.filelist .stats .covered { color: var(--dot-covered); font-weight: 600; }
+.filelist .stats .covered,
+.toolbar-stats .covered { color: var(--dot-covered); font-weight: 600; }
 .index .total .coverable,
-.filelist .stats .coverable { color: var(--fg); }
+.filelist .stats .coverable,
+.toolbar-stats .coverable { color: var(--fg); }
 .index .total .gap,
-.filelist .stats .gap { color: var(--fail); font-weight: 600; }
+.filelist .stats .gap,
+.toolbar-stats .gap { color: var(--fail); font-weight: 600; }
+.index .total .muted,
+.filelist .stats .muted,
+.toolbar-stats .muted { color: var(--fg-dim); }
 .toolbar .toolbar-stats { margin-left: auto; color: var(--fg-dim); }
+/* Clickable "N uncovered" / "N ignored" jumps to the next such line. */
+a.jump {
+  cursor: pointer;
+  text-decoration: underline dotted currentColor;
+  border-radius: 2px;
+}
+a.jump:hover,
+a.jump:focus-visible { text-decoration: underline; outline: none; }
+a.jump.muted:hover,
+a.jump.muted:focus-visible { color: var(--accent); }
+/* Brief flash on the line a jump landed on. */
+@keyframes jumpflash {
+  from { background-color: var(--bg-pin); }
+  to   { background-color: transparent; }
+}
+pre.source tr.jump-target > td { animation: jumpflash 1.5s ease-out; }
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -171,7 +194,7 @@ pre.source tr.pinned td.ln { color: #d8e6a8; }
   background: var(--fg-dim);
 }
 .legend .dot.covered      { background: var(--dot-covered); }
-.legend .dot.uncovered    { background: var(--dot-uncovered); opacity: .6; }
+.legend .dot.uncovered    { background: var(--dot-uncovered); }
 .legend .dot.excluded     { background: var(--dot-excluded); }
 .legend .dot.excl-covered { background: var(--dot-excl-covered); }
 .legend .dot.ignored      { background: var(--dot-ignored); }
