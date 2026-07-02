@@ -214,10 +214,7 @@ fn stats_html(s: LineStats, click: StatsClick<'_>) -> String {
         out.push_str(&jump_part("uncovered", uncovered, "gap", click));
     }
     if s.excluded > 0 {
-        out.push_str(&format!(
-            " · <span class=\"muted\">{} excluded</span>",
-            s.excluded
-        ));
+        out.push_str(&jump_part("excluded", s.excluded, "muted", click));
     }
     if s.ignored > 0 {
         out.push_str(&jump_part("ignored", s.ignored, "muted", click));

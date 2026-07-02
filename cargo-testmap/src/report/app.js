@@ -173,7 +173,9 @@
   var state = {}; // "kind:scope" -> last visited index
 
   function candidates(kind, scope) {
-    var sel = "tr.cov-" + kind;
+    var sel = kind === "excluded"
+      ? "tr.cov-excluded, tr.cov-excl-covered"
+      : "tr.cov-" + kind;
     var root = scope ? document.getElementById("file-" + scope) : document;
     if (!root) return [];
     return Array.prototype.slice.call(root.querySelectorAll(sel));
@@ -223,8 +225,23 @@
   // on the first matching line of this file.
   try {
     var j = new URLSearchParams(window.location.search).get("jump");
-    if (j === "uncovered" || j === "ignored") {
+    if (j === "uncovered" || j === "excluded" || j === "ignored") {
       requestAnimationFrame(function () { jump(j, null, false); });
     }
   } catch (_) {}
+})();
+
+// Click-to-copy: clicking a file path in the toolbar copies it to the clipboard.
+(function () {
+  "use strict";
+  document.querySelectorAll(".toolbar .path").forEach(function (el) {
+    el.title = "click to copy path";
+    el.addEventListener("click", function () {
+      var text = el.textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        el.classList.add("copied");
+        setTimeout(function () { el.classList.remove("copied"); }, 1200);
+      });
+    });
+  });
 })();

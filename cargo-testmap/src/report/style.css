@@ -89,7 +89,9 @@ ul.filelist li:hover { background: var(--bg-row); }
   border-bottom: 1px solid var(--border);
 }
 .toolbar .back { font-weight: 600; }
-.toolbar .path { color: var(--fg-dim); }
+.toolbar .path { color: var(--fg-dim); cursor: pointer; }
+.toolbar .path:hover { color: var(--fg); }
+.toolbar .path.copied { color: var(--dot-covered); transition: color 0s; }
 
 pre.source {
   margin: 0;
