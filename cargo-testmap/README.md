@@ -149,9 +149,10 @@ A trivial example target lives in [`../example`](../example) — see its
 
 Dot color code:
  * green - covered
+ * orange - covered, but only once
  * red - not covered
  * grey - ignored 
- * purple - excluded, but 
+ * purple - excluded, but covered
  * no dot - irrelevant.
 
 Once you've clicked on 'uncovered/excluded/excluded-but-covered/ignored/unique', you can press space to jump to the next one!
@@ -180,6 +181,11 @@ src/
 
 
 ## Changelog
+
+
+### 0.2.0
+    - report uniquely covered lines
+    - include excluded-but-covered in tables & jump targets
 
 ### 0.1.1
 - Respect CARGO_TARGET_DIR

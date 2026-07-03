@@ -1,6 +1,6 @@
 [package]
 name = "cargo-testmap"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Cargo subcommand that maps every source line to the tests that cover it"
 license = "MIT"
