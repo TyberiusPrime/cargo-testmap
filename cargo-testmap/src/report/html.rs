@@ -132,6 +132,41 @@ fn per_test_counts(n_tests: usize, coverage: &BTreeMap<String, SourceFile>) -> V
     counts
 }
 
+/// For each test index, how many lines it covers *uniquely* — lines whose
+/// only covering test is this one (a one-element list in the below-threshold
+/// map). The dual of the per-line "covered by 1 test" dot: a test with zero
+/// unique lines covers nothing the rest of the suite doesn't already cover, so
+/// it is a redundancy candidate. (Lines above threshold are covered by
+/// ≥ threshold tests and so never count toward any single test.)
+fn per_test_unique_counts(n_tests: usize, coverage: &BTreeMap<String, SourceFile>) -> Vec<u32> {
+    let mut counts = vec![0u32; n_tests];
+    for src in coverage.values() {
+        // Lines inside a #[test] fn body are covered only by that test itself
+        // — expected, not a redundancy signal — so exclude them, mirroring the
+        // per-line classification.
+        let test_fn_lines = classify::compute_test_fn_lines(&src.content);
+        for (line, idxs) in &src.lines {
+            if idxs.len() != 1 {
+                continue;
+            }
+            let in_test_fn = line
+                .parse::<usize>()
+                .ok()
+                .and_then(|l| l.checked_sub(1))
+                .and_then(|i| test_fn_lines.get(i).copied())
+                .unwrap_or(false);
+            if in_test_fn {
+                continue;
+            }
+            let i = idxs[0] as usize;
+            if i < n_tests {
+                counts[i] += 1;
+            }
+        }
+    }
+    counts
+}
+
 /// Emit the highlighted source block. `tr_attrs(lineno)` returns the extra
 /// `<tr>` attributes (e.g. `data-line`). `classes[i]` classifies line `i+1`
 /// and drives both the gutter dot's color (via a per-row CSS class) and a
@@ -176,6 +211,7 @@ fn source_block<F: Fn(&str) -> String>(
 fn legend_html() -> &'static str {
     "<div class=\"legend\">\
 <span><span class=\"dot covered\"></span>covered</span> \
+<span><span class=\"dot unique\"></span>covered by 1 test</span> \
 <span><span class=\"dot uncovered\"></span>uncovered</span> \
 <span><span class=\"dot excluded\"></span>excluded</span> \
 <span><span class=\"dot excl-covered\"></span>excluded but covered</span> \
@@ -218,6 +254,9 @@ fn stats_html(s: LineStats, click: StatsClick<'_>) -> String {
     }
     if s.ignored > 0 {
         out.push_str(&jump_part("ignored", s.ignored, "muted", click));
+    }
+    if s.unique > 0 {
+        out.push_str(&jump_part("unique", s.unique, "unique", click));
     }
     out
 }
@@ -304,6 +343,7 @@ pub fn render_directory(
         for (_, s) in class_map.values() {
             total.coverable += s.coverable;
             total.covered += s.covered;
+            total.unique += s.unique;
             total.excluded += s.excluded;
             total.ignored += s.ignored;
         }
@@ -354,6 +394,7 @@ pub fn render_directory(
         html.push_str("<th data-sort=\"coverable\" data-numeric=\"1\">coverable</th>");
         html.push_str("<th data-sort=\"pct\" data-numeric=\"1\">%</th>");
         html.push_str("<th data-sort=\"uncovered\" data-numeric=\"1\">uncovered</th>");
+        html.push_str("<th data-sort=\"unique\" data-numeric=\"1\">unique</th>");
         html.push_str("<th data-sort=\"excluded\" data-numeric=\"1\">excluded</th>");
         html.push_str("<th data-sort=\"ignored\" data-numeric=\"1\">ignored</th>");
         html.push_str("</tr></thead><tbody>");
@@ -387,6 +428,11 @@ pub fn render_directory(
                 "<td class=\"num gap\" data-v=\"{}\">{}</td>",
                 uncovered,
                 jump_count_link(&url, "uncovered", uncovered, "gap")
+            ));
+            html.push_str(&format!(
+                "<td class=\"num unique\" data-v=\"{}\">{}</td>",
+                s.unique,
+                jump_count_link(&url, "unique", s.unique, "unique")
             ));
             html.push_str(&format!(
                 "<td class=\"num muted\" data-v=\"{}\">{}</td>",
@@ -508,6 +554,7 @@ pub fn render_tests_page(
     use std::fs;
 
     let counts = per_test_counts(tests.len(), coverage);
+    let unique_counts = per_test_unique_counts(tests.len(), coverage);
     let zero = counts.iter().filter(|&&c| c == 0).count();
     let nonzero = tests.len().saturating_sub(zero);
     let failed = tests.iter().filter(|t| t.status == "failed").count();
@@ -555,6 +602,7 @@ pub fn render_tests_page(
     html.push_str("<th data-sort=\"binary\">binary</th>");
     html.push_str("<th data-sort=\"path\">test</th>");
     html.push_str("<th data-sort=\"lines\" data-numeric=\"1\">lines</th>");
+    html.push_str("<th data-sort=\"unique\" data-numeric=\"1\">unique</th>");
     html.push_str("<th data-sort=\"dur\" data-numeric=\"1\">dur&nbsp;ms</th>");
     html.push_str("</tr></thead><tbody>");
 
@@ -599,6 +647,18 @@ pub fn render_tests_page(
             counts[i],
             counts[i]
         ));
+        // Lines covered *only* by this test. Zero → dimmed as a redundancy
+        // hint (the dual of the orange per-line dot).
+        let unique_cls = if unique_counts[i] == 0 {
+            "num unique-zero"
+        } else {
+            "num"
+        };
+        html.push_str(&format!(
+            "<td class=\"{unique_cls}\" data-v=\"{}\">{}</td>",
+            unique_counts[i],
+            unique_counts[i]
+        ));
         html.push_str(&format!(
             "<td class=\"num\" data-v=\"{}\">{}</td>",
             t.duration_ms,
@@ -612,7 +672,7 @@ pub fn render_tests_page(
             match t.failure_output.filter(|s| !s.trim().is_empty()) {
                 Some(out) => {
                     html.push_str(&format!(
-                        "<tr class=\"failout\"><td colspan=\"7\">\
+                        "<tr class=\"failout\"><td colspan=\"8\">\
                          <details><summary>output</summary>\
                          <pre class=\"failout-pre\">{}</pre></details></td></tr>",
                         escape(out)
@@ -620,7 +680,7 @@ pub fn render_tests_page(
                 }
                 None => {
                     html.push_str(
-                        "<tr class=\"failout\"><td colspan=\"7\">\
+                        "<tr class=\"failout\"><td colspan=\"8\">\
                          <span class=\"muted\">(no output captured)</span></td></tr>",
                     );
                 }
@@ -671,6 +731,7 @@ pub fn render_single_file(
         let s = classify::stats(&classes);
         total.coverable += s.coverable;
         total.covered += s.covered;
+        total.unique += s.unique;
         total.excluded += s.excluded;
         total.ignored += s.ignored;
         file_classes.insert(path.clone(), classes);
@@ -723,4 +784,67 @@ pub fn render_single_file(
     }
     fs::write(out_path, html)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{per_test_counts, per_test_unique_counts};
+    use crate::report::database::SourceFile;
+    use std::collections::BTreeMap;
+
+    fn sf(lines: &[(&str, Vec<u32>)]) -> SourceFile {
+        SourceFile {
+            content: String::new(),
+            lines: lines
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+            above_threshold: BTreeMap::new(),
+            executable: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn per_test_unique_counts_duality() {
+        // Three tests (indices 0, 1, 2):
+        //   line "1" → covered by all three
+        //   line "2" → covered by tests 0 + 1
+        //   line "3" → covered by test 2 alone
+        //   line "4" → covered by test 1 alone
+        // Total lines per test:  test0=2 (1,2)  test1=3 (1,2,4)  test2=2 (1,3)
+        // Unique lines per test: test0=0         test1=1 (4)      test2=1 (3)
+        // test0 is the redundancy candidate: it covers nothing the rest doesn't.
+        let src = sf(&[
+            ("1", vec![0, 1, 2]),
+            ("2", vec![0, 1]),
+            ("3", vec![2]),
+            ("4", vec![1]),
+        ]);
+        let mut cov = BTreeMap::new();
+        cov.insert("x.rs".to_string(), src);
+        assert_eq!(per_test_counts(3, &cov), vec![2, 3, 2]);
+        assert_eq!(per_test_unique_counts(3, &cov), vec![0, 1, 1]);
+    }
+
+    #[test]
+    fn per_test_unique_counts_excludes_test_fn_bodies() {
+        // One test. Line 3 (`prod();`) sits inside `#[test] fn t` and is
+        // covered only by test 0 — but that's the test covering its own body,
+        // so it must NOT count. Line 6 (`42`) is production code covered only
+        // by test 0, so it DOES count.
+        let src = SourceFile {
+            content: "#[test]\nfn t() {\n    prod();\n}\nfn real() {\n    42\n}\n".to_string(),
+            lines: BTreeMap::from([
+                ("3".to_string(), vec![0]),
+                ("6".to_string(), vec![0]),
+            ]),
+            above_threshold: BTreeMap::new(),
+            executable: vec![1, 2, 3, 4, 5, 6, 7],
+        };
+        let mut cov = BTreeMap::new();
+        cov.insert("t.rs".to_string(), src);
+        // Total counts both lines; unique counts only the production one.
+        assert_eq!(per_test_counts(1, &cov), vec![2]);
+        assert_eq!(per_test_unique_counts(1, &cov), vec![1]);
+    }
 }

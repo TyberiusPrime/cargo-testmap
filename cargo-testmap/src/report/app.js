@@ -225,7 +225,7 @@
   // on the first matching line of this file.
   try {
     var j = new URLSearchParams(window.location.search).get("jump");
-    if (j === "uncovered" || j === "excluded" || j === "ignored") {
+    if (j === "uncovered" || j === "excluded" || j === "ignored" || j === "unique") {
       requestAnimationFrame(function () { jump(j, null, false); });
     }
   } catch (_) {}

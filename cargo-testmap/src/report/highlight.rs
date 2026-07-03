@@ -104,6 +104,8 @@ pub struct ThemeColors {
     pub fail: String,
     /// Gutter-dot colors for line classification (see classify.rs).
     pub dot_covered: String,
+    /// Covered by exactly one test — a "single point of failure".
+    pub dot_unique: String,
     pub dot_uncovered: String,
     pub dot_excluded: String,
     pub dot_excl_covered: String,
@@ -153,6 +155,7 @@ impl ThemeColors {
             // ignored is a dim grey; excluded-but-covered is pink. The exact
             // shades adapt to light/dark themes so every dot stays readable.
             dot_covered: if is_dark { "#99c794" } else { "#2e7d32" }.to_string(),
+            dot_unique: if is_dark { "#d19a66" } else { "#e67e22" }.to_string(),
             dot_uncovered: if is_dark { "#e06c75" } else { "#c0392b" }.to_string(),
             dot_excluded: if is_dark { "#e8eaed" } else { "#5f6368" }.to_string(),
             dot_excl_covered: hex(pink),
@@ -168,7 +171,7 @@ impl ThemeColors {
             ":root{{--bg:{bg};--fg:{fg};--fg-dim:{fg_dim};--bg-elev:{bg_elev};\
 --bg-row:{bg_row};--bg-hover:{bg_hover};--bg-cov:{bg_cov};--bg-pin:{bg_pin};\
 --border:{border};--accent:{accent};--fail:{fail};\
---dot-covered:{dot_covered};--dot-uncovered:{dot_uncovered};--dot-excluded:{dot_excluded};\
+--dot-covered:{dot_covered};--dot-unique:{dot_unique};--dot-uncovered:{dot_uncovered};--dot-excluded:{dot_excluded};\
 --dot-excl-covered:{dot_excl_covered};--dot-ignored:{dot_ignored};}}",
             bg = self.bg,
             fg = self.fg,
@@ -182,6 +185,7 @@ impl ThemeColors {
             accent = self.accent,
             fail = self.fail,
             dot_covered = self.dot_covered,
+            dot_unique = self.dot_unique,
             dot_uncovered = self.dot_uncovered,
             dot_excluded = self.dot_excluded,
             dot_excl_covered = self.dot_excl_covered,

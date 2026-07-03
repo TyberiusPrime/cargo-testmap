@@ -45,9 +45,14 @@
 //!
 //! Dot colors (see style.css / ThemeColors):
 //!   - covered            → green
+//!   - covered by 1 test  → orange       (a single point of failure)
 //!   - uncovered          → red
 //!   - excluded           → white        (pink if covered anyway)
 //!   - ignored            → grey
+//!
+//! Lines inside a `#[test]` fn body are excluded from the "covered by 1 test"
+//! category: a test trivially covers its own body, so flagging it would drown
+//! the signal in noise.
 
 use crate::report::database::SourceFile;
 use regex::Regex;
@@ -60,6 +65,12 @@ pub enum LineClass {
     None,
     /// Executable and reached by ≥1 test.
     Covered,
+    /// Executable and reached by *exactly one* test — a coverage single
+    /// point of failure: removing that one test loses this line's coverage.
+    /// A subtype of [`LineClass::Covered`] shown with its own (orange) dot so
+    /// such lines are spottable at a glance; the dual of the per-test "lines
+    /// uniquely covered" count in the tests catalog.
+    CoveredUnique,
     /// Executable, not excluded/ignored, not reached by any test — a gap.
     Uncovered,
     /// Explicitly excluded (`excl-*` / `unreachable!`) and *not* covered.
@@ -78,6 +89,7 @@ impl LineClass {
         match self {
             LineClass::None => None,
             LineClass::Covered => Some("cov-covered"),
+            LineClass::CoveredUnique => Some("cov-unique"),
             LineClass::Uncovered => Some("cov-uncovered"),
             LineClass::Excluded => Some("cov-excluded"),
             LineClass::ExcludedCovered => Some("cov-excl-covered"),
@@ -90,6 +102,9 @@ impl LineClass {
         match self {
             LineClass::None => "",
             LineClass::Covered => "covered — reached by at least one test",
+            LineClass::CoveredUnique => {
+                "covered by exactly one test — removing it loses this line's coverage"
+            }
             LineClass::Uncovered => "uncovered — no test reached this line",
             LineClass::Excluded => "excluded — coverage not expected (excl marker / unreachable!)",
             LineClass::ExcludedCovered => {
@@ -109,6 +124,11 @@ pub struct LineStats {
     pub coverable: u32,
     /// Coverable lines that were actually reached by a test.
     pub covered: u32,
+    /// Covered lines reached by *exactly one* test (a single point of
+    /// failure). A subset of `covered`; the report surfaces these so coverage
+    /// that hinges on a lone test is visible, and so tests covering *zero*
+    /// unique lines stand out as redundancy candidates.
+    pub unique: u32,
     /// Executable lines marked excluded.
     pub excluded: u32,
     /// Executable lines marked ignored.
@@ -131,6 +151,7 @@ impl LineStats {
 /// such that `classes[i]` describes line `i + 1`.
 pub fn classify(src: &SourceFile) -> Vec<LineClass> {
     let (excluded, ignored) = compute_excl_ignored(&src.content);
+    let test_fn_lines = compute_test_fn_lines(&src.content);
     let executable: BTreeSet<u32> = src.executable.iter().copied().collect();
     let covered: BTreeSet<u32> = src
         .lines
@@ -154,12 +175,20 @@ pub fn classify(src: &SourceFile) -> Vec<LineClass> {
         // a panic site — fold it into the ignored flag.
         let ign = ignored[i] || macro_artifact[i];
         let cov = covered.contains(&lineno);
+        // "Unique" = covered by exactly one test. Such a line sits in the
+        // below-threshold map with a one-element test list; an above-threshold
+        // line (≥ threshold tests) can never be unique. Lines inside a
+        // `#[test]` fn body are excluded — a test always covers its own body,
+        // so flagging it would drown the signal in noise.
+        let unique = cov && uniquely_covered(src, lineno) && !test_fn_lines[i];
         let class = if excl && cov {
             LineClass::ExcludedCovered
         } else if excl {
             LineClass::Excluded
         } else if ign {
             LineClass::Ignored
+        } else if unique {
+            LineClass::CoveredUnique
         } else if cov {
             LineClass::Covered
         } else {
@@ -170,6 +199,102 @@ pub fn classify(src: &SourceFile) -> Vec<LineClass> {
     out
 }
 
+/// True if `lineno` is covered by exactly one test (a coverage single point
+/// of failure: removing that one test loses the line). Such a line lives in
+/// the below-threshold map with a one-element test list; an above-threshold
+/// line is covered by ≥ threshold tests and is therefore never unique.
+fn uniquely_covered(src: &SourceFile, lineno: u32) -> bool {
+    src.lines
+        .get(&lineno.to_string())
+        .is_some_and(|v| v.len() == 1)
+}
+
+/// Per-line (0-indexed) flags marking lines inside a `#[test]` (or `…::test`)
+/// function body — from the attribute line through the body's closing brace.
+/// Such lines are trivially "covered by one test" (the test itself), so the
+/// classifier excludes them from the "unique" (single-point-of-failure)
+/// category; otherwise every test function's body would light up orange.
+///
+/// Detection is a pragmatic, literal/comment-aware brace scan, not a full
+/// parser: it strips string and char literals and `//` comments before
+/// counting braces, so a `}` in a format string or trailing comment can't end
+/// a body early. Raw strings with hashes (`r#"…"#`) and multi-line block
+/// comments aren't special-cased — rare in test functions, and the only
+/// failure mode is under-marking (a test line stays covered-green instead of
+/// being excluded), never a false "unique".
+pub(crate) fn compute_test_fn_lines(content: &str) -> Vec<bool> {
+    let lines: Vec<&str> = content.lines().collect();
+    let cleaned: Vec<String> = lines.iter().map(|l| clean_for_braces(l)).collect();
+    let mut out = vec![false; cleaned.len()];
+    let mut i = 0;
+    while i < cleaned.len() {
+        if TEST_ATTR.is_match(&cleaned[i])
+            && let Some(close) = find_test_body(&cleaned, i)
+        {
+            out[i..=close].fill(true);
+            i = close + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// From a test-attribute line `start`, scan the cleaned lines for the function
+/// body (a `fn` keyword, then the body's braces) and return the 0-based index
+/// of the line holding the matching `}`. Returns `None` if no body is found
+/// (e.g. an orphaned attribute) so the caller won't over-exclude.
+fn find_test_body(cleaned: &[String], start: usize) -> Option<usize> {
+    let mut saw_fn = false;
+    let mut depth: i32 = 0;
+    let mut open_line: Option<usize> = None;
+    for (j, cl) in cleaned.iter().enumerate().skip(start) {
+        if !saw_fn && FN_KW.is_match(cl) {
+            saw_fn = true;
+        }
+        for ch in cl.chars() {
+            match ch {
+                '{' => {
+                    if depth == 0 && saw_fn && open_line.is_none() {
+                        open_line = Some(j);
+                    }
+                    depth += 1;
+                }
+                '}' => {
+                    if depth > 0 {
+                        depth -= 1;
+                        if depth == 0 && open_line.is_some() {
+                            return Some(j);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Strip string/char literals and the trailing `//` comment from a line so the
+/// remainder is safe to brace-count. Order matters: literals first (so a `//`
+/// inside a string isn't mistaken for a comment), then the line comment.
+fn clean_for_braces(line: &str) -> String {
+    let s = STR_LIT.replace_all(line, "").into_owned();
+    let s = CHAR_LIT.replace_all(&s, "").into_owned();
+    match s.find("//") {
+        Some(idx) => s[..idx].to_string(),
+        None => s,
+    }
+}
+
+static TEST_ATTR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#\[[^\]]*\btest\b[^\]]*\]").unwrap());
+static FN_KW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bfn\b").unwrap());
+static STR_LIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:br|b|r)?"(?:\\.|[^"\\])*""#).unwrap());
+static CHAR_LIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"'(?:\\.|[^'\\])*'"#).unwrap());
+
 /// Tally a file's classification vector into [`LineStats`].
 pub fn stats(classes: &[LineClass]) -> LineStats {
     let mut s = LineStats::default();
@@ -178,6 +303,11 @@ pub fn stats(classes: &[LineClass]) -> LineStats {
             LineClass::Covered => {
                 s.coverable += 1;
                 s.covered += 1;
+            }
+            LineClass::CoveredUnique => {
+                s.coverable += 1;
+                s.covered += 1;
+                s.unique += 1;
             }
             LineClass::Uncovered => s.coverable += 1,
             LineClass::Excluded | LineClass::ExcludedCovered => s.excluded += 1,
@@ -709,5 +839,98 @@ mod tests {
         assert!(!f("    if a != 0 {")); // `!=` is not a macro
         // a stray `foo!(` in a trailing comment must not trigger
         assert!(!f("    let x = 1; // see format!("));
+    }
+
+    // --- single-test ("unique") coverage ---------------------------------
+
+    #[test]
+    fn single_covering_test_is_unique() {
+        // A line covered by exactly one test → orange "unique" dot; covered by
+        // two tests → plain green. Unique is a subset of covered, so both still
+        // count toward the coverage total.
+        let mut src = file("let a = 1;\nlet b = 2;\n");
+        src.lines.insert("1".to_string(), vec![0]);
+        src.lines.insert("2".to_string(), vec![0, 1]);
+        let c = classes(&src);
+        assert_eq!(c[0], LineClass::CoveredUnique);
+        assert_eq!(c[1], LineClass::Covered);
+        let s = stats(&c);
+        assert_eq!(s.coverable, 2);
+        assert_eq!(s.covered, 2);
+        assert_eq!(s.unique, 1);
+    }
+
+    #[test]
+    fn above_threshold_line_is_not_unique() {
+        // A line covered by many tests is only known to be covered (we keep a
+        // sample, not every test), and it can never be a single point of
+        // failure — so it must read as plain covered, not unique.
+        let mut src = file("let a = 1;\n");
+        src.above_threshold.insert(
+            "1".to_string(),
+            crate::report::database::AboveThreshold { total: 12, sample: vec![3] },
+        );
+        assert_eq!(classes(&src)[0], LineClass::Covered);
+    }
+
+    #[test]
+    fn unique_is_suppressed_by_excluded_and_ignored() {
+        // A singly-covered line that is also excluded/ignored keeps its
+        // exclusion/ignore classification — "unique" only refines plain
+        // covered lines.
+        let mut a = file("let a = 1; //cov:excl-line\n");
+        a.lines.insert("1".to_string(), vec![0]);
+        assert_eq!(classes(&a)[0], LineClass::ExcludedCovered);
+
+        let mut b = file("let a = foo().unwrap();\n");
+        b.lines.insert("1".to_string(), vec![0]);
+        assert_eq!(classes(&b)[0], LineClass::Ignored);
+    }
+
+    // --- #[test] fn bodies are excluded from "unique" ----------------------
+
+    #[test]
+    fn test_fn_body_is_not_unique() {
+        // A #[test] fn's body is covered only by itself — that's expected, not
+        // a single point of failure, so it must read as plain covered (green)
+        // and must NOT count toward the unique stat.
+        let mut src = file("#[test]\nfn basic() {\n    assert_eq!(1 + 1, 2);\n}\n");
+        src.lines.insert("3".to_string(), vec![0]); // the assert, covered by the sole test
+        let c = classes(&src);
+        assert_eq!(c[2], LineClass::Covered); // not CoveredUnique
+        assert_eq!(stats(&c).unique, 0);
+    }
+
+    #[test]
+    fn production_fn_uniquely_covered_is_unique() {
+        // A normal (non-test) fn whose body only one test covers stays orange.
+        let mut src = file("fn helper() {\n    1 + 1\n}\n");
+        src.executable = vec![1, 2, 3];
+        src.lines.insert("2".to_string(), vec![0]);
+        assert_eq!(classes(&src)[1], LineClass::CoveredUnique);
+    }
+
+    #[test]
+    fn async_test_attr_recognised() {
+        // #[tokio::test] and other `…::test` attributes mark the body too.
+        let mut src = file("#[tokio::test]\nasync fn it() {\n    do_thing().await;\n}\n");
+        src.lines.insert("3".to_string(), vec![0]);
+        assert_eq!(classes(&src)[2], LineClass::Covered);
+    }
+
+    #[test]
+    fn brace_in_string_does_not_close_test_body_early() {
+        // A '}' inside a format string must not end the body scan early — the
+        // real closing brace is on a later line. Both body lines land inside
+        // the test fn → plain covered, not unique.
+        let mut src = file(
+            "#[test]\nfn with_fmt() {\n    let s = format!(\"}\");\n    assert!(s.is_empty());\n}\n",
+        );
+        src.lines.insert("3".to_string(), vec![0]);
+        src.lines.insert("4".to_string(), vec![0]);
+        let c = classes(&src);
+        assert_eq!(c[2], LineClass::Covered);
+        assert_eq!(c[3], LineClass::Covered);
+        assert_eq!(stats(&c).unique, 0);
     }
 }

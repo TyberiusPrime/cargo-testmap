@@ -72,15 +72,34 @@ the rules needs no re-collection.
 
 ### Markers
 
+**Covered**
+    This line is covered by at least one test. Marked green.
+
+**Uncovered**
+    This line is **not** covered by any test. Marked red.
+
+**Unique**
+    This line is only covered by a single test,
+    or it's a #[test] function. We don't count these as unique, they always are.
+
+    This is a subset of 'Covered'. Marked orange.
+
 **Excluded** — coverage is explicitly *not expected* (removed from the
-coverable total; white dot):
+coverable total; Marked white).
+
+Influence via:
 
 - `//cov:excl-start` … `//cov:excl-stop` — exclude the lines in the region.
 - `//cov:excl-line` — exclude just this line.
 - `unreachable!` — any line containing `unreachable!` is auto-excluded.
 
-**Ignored** — panic-shaped noise we don't want muddying the numbers (grey dot;
+** Excluded, but covered**
+    This line was excluded (see previous section), but covered. Marked purple.
+
+**Ignored** — panic-shaped noise we don't want muddying the numbers (marked grey;
 not counted as coverable):
+
+Influence via:
 
 - `//cov:ignore-start` … `//cov:ignore-stop` — ignore the lines in the region.
 - `//cov:ignore-line` — ignore just this line.

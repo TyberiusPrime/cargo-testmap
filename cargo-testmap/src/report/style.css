@@ -72,6 +72,8 @@ ul.filelist li:hover { background: var(--bg-row); }
 .filelist-table a.jump.gap { color: var(--fail); font-weight: 600; }
 .filelist-table td.muted,
 .filelist-table a.jump.muted { color: var(--fg-dim); }
+.filelist-table td.unique,
+.filelist-table a.jump.unique { color: var(--dot-unique); font-weight: 600; }
 /* Zero-count placeholder ("-") in the uncovered/excluded/ignored columns:
    default color + weight, overriding the column's gap/muted styling. */
 .filelist-table .dash { color: var(--fg); font-weight: 400; }
@@ -123,6 +125,7 @@ pre.source td.lc {
    green = covered, red = uncovered (a gap), white = excluded,
    pink = excluded-but-covered, grey = ignored. */
 pre.source tr.cov-covered td.ln::before,
+pre.source tr.cov-unique td.ln::before,
 pre.source tr.cov-uncovered td.ln::before,
 pre.source tr.cov-excluded td.ln::before,
 pre.source tr.cov-excl-covered td.ln::before,
@@ -131,6 +134,7 @@ pre.source tr.cov-ignored td.ln::before {
   margin-right: .4ch;
 }
 pre.source tr.cov-covered    td.ln::before { color: var(--dot-covered); }
+pre.source tr.cov-unique     td.ln::before { color: var(--dot-unique); }
 pre.source tr.cov-uncovered  td.ln::before { color: var(--dot-uncovered); }
 pre.source tr.cov-excluded   td.ln::before { color: var(--dot-excluded); }
 pre.source tr.cov-excl-covered td.ln::before { color: var(--dot-excl-covered); }
@@ -202,6 +206,10 @@ pre.source tr.pinned td.ln { color: #d8e6a8; }
 .index .total .muted,
 .filelist .stats .muted,
 .toolbar-stats .muted { color: var(--fg-dim); }
+/* "unique" = lines covered by exactly one test: a single point of failure. */
+.index .total .unique,
+.filelist .stats .unique,
+.toolbar-stats .unique { color: var(--dot-unique); font-weight: 600; }
 .toolbar .toolbar-stats { margin-left: auto; color: var(--fg-dim); }
 /* Clickable "N uncovered" / "N ignored" jumps to the next such line. */
 a.jump {
@@ -213,6 +221,8 @@ a.jump:hover,
 a.jump:focus-visible { text-decoration: underline; outline: none; }
 a.jump.muted:hover,
 a.jump.muted:focus-visible { color: var(--accent); }
+a.jump.unique:hover,
+a.jump.unique:focus-visible { color: var(--accent); }
 /* Brief flash on the line a jump landed on. */
 @keyframes jumpflash {
   from { background-color: var(--bg-pin); }
@@ -237,6 +247,7 @@ pre.source tr.jump-target > td { animation: jumpflash 1.5s ease-out; }
   background: var(--fg-dim);
 }
 .legend .dot.covered      { background: var(--dot-covered); }
+.legend .dot.unique       { background: var(--dot-unique); }
 .legend .dot.uncovered    { background: var(--dot-uncovered); }
 .legend .dot.excluded     { background: var(--dot-excluded); }
 .legend .dot.excl-covered { background: var(--dot-excl-covered); }
@@ -270,6 +281,10 @@ main.tests-page { padding: 1rem 2rem 5rem; }
 .tests-table td.num { text-align: right; }
 .tests-table tr.zero td.num { color: var(--fail); font-weight: 600; }
 .tests-table tr.zero td.tname { color: var(--fg-dim); }
+/* A test covering zero lines uniquely adds nothing the rest of the suite
+   doesn't already cover — dim it as a gentle redundancy hint (the dual of the
+   orange per-line dot). */
+.tests-table td.unique-zero { color: var(--fg-dim); }
 .tests-table tr.failed td.status { color: var(--fail); }
 .tests-table tr.failout > td {
   padding: .15rem .6rem .45rem;
