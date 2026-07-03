@@ -163,22 +163,21 @@
   });
 })();
 
-// Click-to-jump: the "N uncovered" / "N ignored" links scroll to the next
-// matching line (cycling). Each link carries `data-jump` ("uncovered"/"ignored")
-// and, on the single-file report, an optional `data-file-id` scoping it to one
-// file's section. Directory index rows navigate via `?jump=` (handled below on
-// load) rather than firing this handler.
+// Click-to-jump: the "N uncovered" / "N ignored" / "N excluded but covered"
+// links scroll to the next matching line (cycling). Each link carries
+// `data-jump` (a classification kind: "uncovered"/"excluded"/"excl-covered"/
+// "ignored"/"unique") and, on the single-file report, an optional
+// `data-file-id` scoping it to one file's section. Directory index rows
+// navigate via `?jump=` (handled below on load) rather than firing this
+// handler.
 (function () {
   "use strict";
   var state = {}; // "kind:scope" -> last visited index
 
   function candidates(kind, scope) {
-    var sel = kind === "excluded"
-      ? "tr.cov-excluded, tr.cov-excl-covered"
-      : "tr.cov-" + kind;
     var root = scope ? document.getElementById("file-" + scope) : document;
     if (!root) return [];
-    return Array.prototype.slice.call(root.querySelectorAll(sel));
+    return Array.prototype.slice.call(root.querySelectorAll("tr.cov-" + kind));
   }
 
   function flash(tr) {
@@ -221,11 +220,11 @@
     activate(a);
   });
 
-  // Deep link from the directory index: ?jump=uncovered / ?jump=ignored lands
-  // on the first matching line of this file.
+  // Deep link from the directory index: ?jump=uncovered / ?jump=ignored /
+  // ?jump=excl-covered lands on the first matching line of this file.
   try {
     var j = new URLSearchParams(window.location.search).get("jump");
-    if (j === "uncovered" || j === "excluded" || j === "ignored" || j === "unique") {
+    if (j === "uncovered" || j === "excluded" || j === "excl-covered" || j === "ignored" || j === "unique") {
       requestAnimationFrame(function () { jump(j, null, false); });
     }
   } catch (_) {}

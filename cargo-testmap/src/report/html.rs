@@ -247,29 +247,43 @@ fn stats_html(s: LineStats, click: StatsClick<'_>) -> String {
     );
     out.push_str(&format!(" <span class=\"pct\">({pct})</span>"));
     if uncovered > 0 {
-        out.push_str(&jump_part("uncovered", uncovered, "gap", click));
+        out.push_str(&jump_part("uncovered", "uncovered", uncovered, "gap", click));
     }
     if s.excluded > 0 {
-        out.push_str(&jump_part("excluded", s.excluded, "muted", click));
+        out.push_str(&jump_part("excluded", "excluded", s.excluded, "muted", click));
+    }
+    if s.excluded_covered > 0 {
+        // A stale exclusion marker: excluded yet still covered. Surfaced on
+        // its own (pink) so it stands out from clean exclusions.
+        out.push_str(&jump_part(
+            "excl-covered",
+            "excluded but covered",
+            s.excluded_covered,
+            "excl-covered",
+            click,
+        ));
     }
     if s.ignored > 0 {
-        out.push_str(&jump_part("ignored", s.ignored, "muted", click));
+        out.push_str(&jump_part("ignored", "ignored", s.ignored, "muted", click));
     }
     if s.unique > 0 {
-        out.push_str(&jump_part("unique", s.unique, "unique", click));
+        out.push_str(&jump_part("unique", "unique", s.unique, "unique", click));
     }
     out
 }
 
-/// Render one clickable-or-plain "N <kind>" fragment for [`stats_html`].
-fn jump_part(kind: &str, n: u32, base: &str, click: StatsClick<'_>) -> String {
+/// Render one clickable-or-plain "N <label>" fragment for [`stats_html`].
+/// `kind` is the jump key the client-side handler (`data-jump` / `?jump=`)
+/// matches on; `label` is the human-readable text shown after the count
+/// (they differ for "excl-covered", whose key must match its CSS class).
+fn jump_part(kind: &str, label: &str, n: u32, base: &str, click: StatsClick<'_>) -> String {
     match click {
-        StatsClick::None => format!(" · <span class=\"{base}\">{n} {kind}</span>"),
+        StatsClick::None => format!(" · <span class=\"{base}\">{n} {label}</span>"),
         StatsClick::ScrollPage => format!(
-            " · <a class=\"jump {base}\" data-jump=\"{kind}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {kind}</a>"
+            " · <a class=\"jump {base}\" data-jump=\"{kind}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {label}</a>"
         ),
         StatsClick::ScrollFile(path) => format!(
-            " · <a class=\"jump {base}\" data-jump=\"{kind}\" data-file-id=\"{id}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {kind}</a>",
+            " · <a class=\"jump {base}\" data-jump=\"{kind}\" data-file-id=\"{id}\" href=\"#\" role=\"button\" tabindex=\"0\">{n} {label}</a>",
             id = fnv1a(path)
         ),
     }
@@ -293,10 +307,10 @@ fn count_or_dash(n: u32) -> String {
     }
 }
 
-/// A bare count cell for the index table's uncovered/ignored columns: a plain
-/// `<a class="jump …">` (linking into the file page at the first matching line
-/// via `?jump=`) when non-zero, or a [`zero_dash`] when there's nothing to
-/// jump to.
+/// A bare count cell for an index table jump column (uncovered / unique /
+/// ignored / excl-covered): a plain `<a class="jump …">` (linking into the
+/// file page at the first matching line via `?jump=`) when non-zero, or a
+/// [`zero_dash`] when there's nothing to jump to.
 fn jump_count_link(url: &str, kind: &str, n: u32, base: &str) -> String {
     if n == 0 {
         zero_dash()
@@ -345,6 +359,7 @@ pub fn render_directory(
             total.covered += s.covered;
             total.unique += s.unique;
             total.excluded += s.excluded;
+            total.excluded_covered += s.excluded_covered;
             total.ignored += s.ignored;
         }
 
@@ -396,6 +411,7 @@ pub fn render_directory(
         html.push_str("<th data-sort=\"uncovered\" data-numeric=\"1\">uncovered</th>");
         html.push_str("<th data-sort=\"unique\" data-numeric=\"1\">unique</th>");
         html.push_str("<th data-sort=\"excluded\" data-numeric=\"1\">excluded</th>");
+        html.push_str("<th data-sort=\"excl-covered\" data-numeric=\"1\">excl-covered</th>");
         html.push_str("<th data-sort=\"ignored\" data-numeric=\"1\">ignored</th>");
         html.push_str("</tr></thead><tbody>");
         for (path, s) in order {
@@ -438,6 +454,11 @@ pub fn render_directory(
                 "<td class=\"num muted\" data-v=\"{}\">{}</td>",
                 s.excluded,
                 count_or_dash(s.excluded)
+            ));
+            html.push_str(&format!(
+                "<td class=\"num excl-covered\" data-v=\"{}\">{}</td>",
+                s.excluded_covered,
+                jump_count_link(&url, "excl-covered", s.excluded_covered, "excl-covered")
             ));
             html.push_str(&format!(
                 "<td class=\"num muted\" data-v=\"{}\">{}</td>",
@@ -733,6 +754,7 @@ pub fn render_single_file(
         total.covered += s.covered;
         total.unique += s.unique;
         total.excluded += s.excluded;
+        total.excluded_covered += s.excluded_covered;
         total.ignored += s.ignored;
         file_classes.insert(path.clone(), classes);
     }

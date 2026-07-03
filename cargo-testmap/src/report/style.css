@@ -74,6 +74,8 @@ ul.filelist li:hover { background: var(--bg-row); }
 .filelist-table a.jump.muted { color: var(--fg-dim); }
 .filelist-table td.unique,
 .filelist-table a.jump.unique { color: var(--dot-unique); font-weight: 600; }
+.filelist-table td.excl-covered,
+.filelist-table a.jump.excl-covered { color: var(--dot-excl-covered); font-weight: 600; }
 /* Zero-count placeholder ("-") in the uncovered/excluded/ignored columns:
    default color + weight, overriding the column's gap/muted styling. */
 .filelist-table .dash { color: var(--fg); font-weight: 400; }
@@ -210,6 +212,11 @@ pre.source tr.pinned td.ln { color: #d8e6a8; }
 .index .total .unique,
 .filelist .stats .unique,
 .toolbar-stats .unique { color: var(--dot-unique); font-weight: 600; }
+/* "excluded but covered" = a stale exclusion marker (excluded yet still
+   covered): pink so it stands out from clean exclusions. */
+.index .total .excl-covered,
+.filelist .stats .excl-covered,
+.toolbar-stats .excl-covered { color: var(--dot-excl-covered); font-weight: 600; }
 .toolbar .toolbar-stats { margin-left: auto; color: var(--fg-dim); }
 /* Clickable "N uncovered" / "N ignored" jumps to the next such line. */
 a.jump {
@@ -223,6 +230,8 @@ a.jump.muted:hover,
 a.jump.muted:focus-visible { color: var(--accent); }
 a.jump.unique:hover,
 a.jump.unique:focus-visible { color: var(--accent); }
+a.jump.excl-covered:hover,
+a.jump.excl-covered:focus-visible { color: var(--accent); }
 /* Brief flash on the line a jump landed on. */
 @keyframes jumpflash {
   from { background-color: var(--bg-pin); }

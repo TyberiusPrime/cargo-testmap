@@ -54,9 +54,10 @@ count. Files are ordered worst-coverage-first.
 
 Every executable source line is classified into one category, shown as a
 colored dot in its gutter (hover the dot for an explanation; the index also has
-a legend). The **uncovered** and **ignored** counts in a stats line are
-links — click them to jump to the next such line (on the index they jump into
-the file). Uncovered lines get a red dot so gaps are obvious at a glance.
+a legend). The **uncovered**, **excluded**, **excluded-but-covered**,
+**ignored**, and **unique** counts in a stats line are links — click them to
+jump to the next such line (on the index they jump into the file). Uncovered
+lines get a red dot so gaps are obvious at a glance.
 
 | Dot color | Category      | Meaning                                                       |
 |-----------|---------------|---------------------------------------------------------------|
@@ -153,7 +154,7 @@ Dot color code:
  * purple - excluded, but 
  * no dot - irrelevant.
 
-Once you've clicked on 'uncovered/excluded/ignored', you can press space to jump to the next one!
+Once you've clicked on 'uncovered/excluded/excluded-but-covered/ignored/unique', you can press space to jump to the next one!
 
 ## Project layout
 

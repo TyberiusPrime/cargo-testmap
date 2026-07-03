@@ -129,8 +129,12 @@ pub struct LineStats {
     /// that hinges on a lone test is visible, and so tests covering *zero*
     /// unique lines stand out as redundancy candidates.
     pub unique: u32,
-    /// Executable lines marked excluded.
+    /// Executable lines marked excluded and *not* covered (white dot).
     pub excluded: u32,
+    /// Executable lines marked excluded that were covered anyway — usually a
+    /// stale exclusion marker (pink dot). A subset of all excluded lines;
+    /// `excluded + excluded_covered` is the total excluded line count.
+    pub excluded_covered: u32,
     /// Executable lines marked ignored.
     pub ignored: u32,
 }
@@ -310,7 +314,8 @@ pub fn stats(classes: &[LineClass]) -> LineStats {
                 s.unique += 1;
             }
             LineClass::Uncovered => s.coverable += 1,
-            LineClass::Excluded | LineClass::ExcludedCovered => s.excluded += 1,
+            LineClass::Excluded => s.excluded += 1,
+            LineClass::ExcludedCovered => s.excluded_covered += 1,
             LineClass::Ignored => s.ignored += 1,
             LineClass::None => {}
         }
@@ -736,8 +741,30 @@ mod tests {
         assert_eq!(s.coverable, 2);
         assert_eq!(s.covered, 2);
         assert_eq!(s.excluded, 1);
+        assert_eq!(s.excluded_covered, 0);
         assert_eq!(s.ignored, 1);
         assert_eq!(s.pct(), Some(100));
+    }
+
+    #[test]
+    fn stats_split_excluded_and_excluded_covered() {
+        // Two excluded lines: line 1 uncovered (pure excluded), line 2 covered
+        // anyway (excluded-but-covered). The two counts must be tallied
+        // separately so the report can surface stale markers on their own.
+        let src = SourceFile {
+            content: "a //cov:excl-line\nb //cov:excl-line\n".to_string(),
+            lines: BTreeMap::from([("2".to_string(), vec![0])]),
+            above_threshold: BTreeMap::new(),
+            executable: vec![1, 2],
+        };
+        let c = classify(&src);
+        assert_eq!(c[0], LineClass::Excluded);
+        assert_eq!(c[1], LineClass::ExcludedCovered);
+        let s = stats(&c);
+        assert_eq!(s.excluded, 1);
+        assert_eq!(s.excluded_covered, 1);
+        // Neither counts as coverable — excluded lines opt out of the total.
+        assert_eq!(s.coverable, 0);
     }
 
     // --- multi-line macro head phantom detection ---------------------------
