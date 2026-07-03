@@ -16,6 +16,13 @@ See [`DESIGN.md`](./DESIGN.md) for the full design document.
 
 ![Screenshot showing example file](https://raw.githubusercontent.com/TyberiusPrime/cargo-testmap/main/cargo-testmap/showcase/file.png)
 
+
+## Installation
+
+`cargo install cargo-testmap` should suffice.
+
+This project is also a nix flake.
+
 ## How it works
 
 **`cargo testmap run`** - builds & runs every test under coverage, individually,
@@ -156,3 +163,10 @@ src/
 
 ### 0.1.1
 - Respect CARGO_TARGET_DIR
+
+
+## AI policy
+
+This is a mostly vibe coded project. I barely glanced at the source. 
+AI contributions are welcome.
+
