@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 description = "Cargo subcommand that maps every source line to the tests that cover it"
 license = "MIT"
+repository = "https://github.com/TyberiusPrime/cargo-testmap"
+documentation = "https://docs.rs/crate/cargo-testmap/latest"
 
 [[bin]]
 name = "cargo-testmap"
